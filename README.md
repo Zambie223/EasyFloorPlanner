@@ -2,6 +2,18 @@
 
 A PlateUp! mod that lets you reshape your restaurant during the night: grow or shrink it, move the walls between rooms, add new kitchens and dining rooms, and turn any internal wall into a serving hatch or a door.
 
+## Installing
+
+1. **Subscribe to Harmony** on the Steam Workshop (id `2898033283`). It's required.
+2. **Download** `EasyFloorPlanner-<version>.zip` from the [Releases page](https://github.com/Zambie223/EasyFloorPlanner/releases).
+3. **Unzip it into PlateUp's `Mods` folder,** so you end up with `...\PlateUp\PlateUp\Mods\EasyFloorPlanner\EasyFloorPlanner.dll`.
+   - To find the folder in Steam: right-click PlateUp, then Manage, then Browse local files, and open the `PlateUp` folder.
+   - Create the `Mods` folder if it doesn't exist.
+   - Keep the `.pdb` next to the `.dll`: it adds line numbers to error reports.
+4. **Start the game.** At night, a **Floor Plan** terminal appears in front of your restaurant.
+
+**To uninstall,** delete the `Mods\EasyFloorPlanner` folder. Edited layouts stay as they are (see [Saves](#saves)).
+
 ## How it works
 
 - **Opening the editor:** at night, a **Floor Plan** terminal stands outside, in front of your restaurant near the practice-mode pad. Press interact on it. Only one player can edit at a time.

@@ -1,10 +1,8 @@
 # Changelog
 
-Public-facing changes, tracked from the first public release onward.
+## 0.1.0 (2026-11-15, first public release)
 
-## 0.1.0 (2026-11-15): first public release
-
-Easy Floor Planner: reshape your restaurant at night.
+Reshape your restaurant at night.
 
 - **Floor Plan terminal** at night, in front of the restaurant.
 - **Draft editor:**
