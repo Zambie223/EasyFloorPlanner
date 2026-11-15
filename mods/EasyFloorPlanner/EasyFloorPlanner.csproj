@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Most settings live in mods\Directory.Build.props / .targets. -->
+  <PropertyGroup>
+    <AssemblyName>EasyFloorPlanner</AssemblyName>
+    <RootNamespace>EasyFloorPlanner</RootNamespace>
+    <Version>0.1.0</Version>
+    <!-- Folder name under <game>\Mods\ -->
+    <ModFolderName>EasyFloorPlanner</ModFolderName>
+    <!-- Harmony is required: NavmeshAreaPatch lifts vanilla's fixed navmesh area (and the Debug-only
+         self-test uses it to block save writes). Players need the Harmony Workshop item. -->
+    <UseHarmony>true</UseHarmony>
+  </PropertyGroup>
+</Project>

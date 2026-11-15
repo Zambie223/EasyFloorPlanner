@@ -1,0 +1,22 @@
+# Build output
+bin/
+obj/
+*.user
+
+# Automated in-game test runs: screenshots, log copies, save backups (personal data)
+_testruns/
+
+# Decompiled game code, if you make one for reference: copyrighted, never commit it.
+_decompiled/
+
+# Machine-specific build settings (game path etc.)
+Directory.Build.local.props
+
+# Repo-local .NET SDK (see global.json)
+.dotnet/
+
+# Editors / OS
+.vs/
+*.swp
+Thumbs.db
+desktop.ini

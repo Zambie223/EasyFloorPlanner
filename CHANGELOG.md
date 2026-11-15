@@ -1,0 +1,26 @@
+# Changelog
+
+Public-facing changes, tracked from the first public release onward.
+
+## 0.1.0 (2026-11-15): first public release
+
+Easy Floor Planner: reshape your restaurant at night.
+
+- **Floor Plan terminal** at night, in front of the restaurant.
+- **Draft editor:**
+  - paint floor into existing rooms, new dining rooms or new kitchens, or remove floor (grow, shrink, move walls between rooms);
+  - set any wall between two rooms to a wall, a serving hatch or a door, with holograms of drafted walls;
+  - Shift+drag box painting, room/wall-type picking, and undo;
+  - top-down camera that pans beyond the restaurant (WASD / left stick);
+  - Apply rebuilds the restaurant once; Cancel changes nothing.
+- **Rules:**
+  - appliances block edits;
+  - every floor tile must be reachable from the front door;
+  - the front stays the front;
+  - up to 30 tiles from the centre.
+- **Watching:** other players can watch the editor's draft live.
+- **Outdoor scenery** on or beside new floor is removed.
+- **Street settings (such as Turbo):** neighbouring buildings, the street and the front border are refitted to the new size. *Not yet verified in-game.*
+- **Night lighting** covers the whole restaurant, including beyond the base game's 32 x 32 tile lighting map.
+- **Saves:** the game saves edited layouts itself; the mod adds nothing to save files.
+- **Online play hasn't been tested yet.** Every player needs the mod.
