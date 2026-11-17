@@ -77,7 +77,8 @@ namespace EasyFloorPlanner
     }
 
     /// <summary>
-    /// The editor's cursor and brush, relayed to spectators. Mode is 0 for floor, 1 for walls.
+    /// The editor's cursor and brush, relayed to spectators. Mode is 0 for floor, 1 for walls, 2 for
+    /// the camera area.
     /// </summary>
     public struct FloorPlanCursor
     {
@@ -124,6 +125,12 @@ namespace EasyFloorPlanner
         public int PreviewHash;
         public FloorPlanCursor Cursor;
 
+        /// <summary>The camera area now in effect (what the day camera frames).</summary>
+        public FloorPlanCameraArea CameraArea;
+
+        /// <summary>Spectators only: the editor's drafted camera area.</summary>
+        public FloorPlanCameraArea PreviewArea;
+
         public bool IsChangedFrom(FloorPlanViewData check)
         {
             return ViewerPlayerID != check.ViewerPlayerID
@@ -138,7 +145,9 @@ namespace EasyFloorPlanner
                 || SpectatorCount != check.SpectatorCount
                 || PreviewHash != check.PreviewHash
                 || (Preview == null) != (check.Preview == null)
-                || !Cursor.SameAs(check.Cursor);
+                || !Cursor.SameAs(check.Cursor)
+                || !CameraArea.SameAs(check.CameraArea)
+                || !PreviewArea.SameAs(check.PreviewArea);
         }
     }
 
@@ -156,5 +165,8 @@ namespace EasyFloorPlanner
 
         /// <summary>Preview only.</summary>
         public FloorPlanCursor Cursor;
+
+        /// <summary>Apply and Preview: the drafted camera area (applied along with the layout).</summary>
+        public FloorPlanCameraArea CameraArea;
     }
 }

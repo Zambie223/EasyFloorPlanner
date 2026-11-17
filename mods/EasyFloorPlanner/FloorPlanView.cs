@@ -34,7 +34,10 @@ namespace EasyFloorPlanner
     /// </summary>
     public class FloorPlanView : ResponsiveObjectView<FloorPlanViewData, FloorPlanResponse>, IInputConsumer
     {
-        private enum Mode { Tiles, Walls }
+        // The numeric values are sent to spectators (FloorPlanCursor.Mode).
+        private enum Mode { Tiles = 0, Walls = 1, Camera = 2 }
+
+        private static readonly Color CameraColour = new Color(0.25f, 0.85f, 1f);
 
         private class Brush
         {
@@ -83,7 +86,12 @@ namespace EasyFloorPlanner
         private LayoutBlueprint Committed;
         private int CommittedHash;
         private LayoutBlueprint Draft;
-        private readonly Stack<LayoutBlueprint> Undo = new Stack<LayoutBlueprint>();
+        private readonly Stack<(LayoutBlueprint draft, FloorPlanCameraArea area)> Undo = new Stack<(LayoutBlueprint, FloorPlanCameraArea)>();
+
+        /// <summary>What the day camera frames now, and in the draft (see CameraAreaMarkers).</summary>
+        private FloorPlanCameraArea CommittedArea;
+        private FloorPlanCameraArea DraftArea;
+        private FloorPlanCameraArea LastPreviewArea;
         private HashSet<LayoutPosition> Blocked = new HashSet<LayoutPosition>();
         private HashSet<LayoutPosition> Unreachable = new HashSet<LayoutPosition>();
 
@@ -102,7 +110,11 @@ namespace EasyFloorPlanner
 
         private string CurrentBrushLabel => CurrentMode == Mode.Walls
             ? EdgeBrushes[EdgeBrushIndex].Label
-            : (Brushes.Count > 0 ? Brushes[Mathf.Clamp(BrushIndex, 0, Brushes.Count - 1)].Label : "");
+            : CurrentMode == Mode.Camera
+                ? AreaLabel(DraftArea)
+                : (Brushes.Count > 0 ? Brushes[Mathf.Clamp(BrushIndex, 0, Brushes.Count - 1)].Label : "");
+
+        private static string AreaLabel(FloorPlanCameraArea a) => a.Custom ? $"Day view: {a.Width} x {a.Height} tiles" : "Day view: whole restaurant";
         private Mode CurrentMode = Mode.Tiles;
 
         private LayoutPosition CursorTile;
@@ -194,6 +206,7 @@ namespace EasyFloorPlanner
             }
 
             Blocked = new HashSet<LayoutPosition>(data.Blocked ?? new List<LayoutPosition>());
+            CommittedArea = data.CameraArea;
             if (data.Layout != null && data.LayoutHash != CommittedHash)
             {
                 bool hadDraft = Committed != null;
@@ -247,9 +260,20 @@ namespace EasyFloorPlanner
                 Unreachable = LayoutEdits.Unreachable(Draft);
                 OverlayDirty = true;
             }
+            if (!data.PreviewArea.SameAs(DraftArea) || !data.CameraArea.SameAs(CommittedArea))
+            {
+                OverlayDirty = true;
+            }
+            CommittedArea = data.CameraArea;
+            DraftArea = data.PreviewArea;
             CursorTile = data.Cursor.Tile;
             CursorFacing = data.Cursor.Facing;
-            CurrentMode = data.Cursor.Mode == 1 ? Mode.Walls : Mode.Tiles;
+            Mode mode = data.Cursor.Mode == 1 ? Mode.Walls : data.Cursor.Mode == 2 ? Mode.Camera : Mode.Tiles;
+            if (mode != CurrentMode)
+            {
+                CurrentMode = mode;
+                OverlayDirty = true;
+            }
             // The editor's facing is never (0, 0), so a zero facing means no preview has arrived yet.
             CursorPlaced = data.Cursor.Facing.x != 0 || data.Cursor.Facing.y != 0;
         }
@@ -416,7 +440,8 @@ namespace EasyFloorPlanner
                 paintPressed = Mouse.current.leftButton.wasPressedThisFrame;
                 paintDown = Mouse.current.leftButton.isPressed;
                 pick = Mouse.current.rightButton.wasPressedThisFrame;
-                float wheel = Mouse.current.scroll.ReadValue().y;
+                // Ctrl + wheel zooms the view instead (PlayCamera).
+                float wheel = kb.ctrlKey.isPressed ? 0f : Mouse.current.scroll.ReadValue().y;
                 nextBrush = kb.eKey.wasPressedThisFrame || wheel < 0f;
                 prevBrush = kb.qKey.wasPressedThisFrame || wheel > 0f;
                 toggleMode = kb.tabKey.wasPressedThisFrame;
@@ -463,7 +488,8 @@ namespace EasyFloorPlanner
             }
             if (toggleMode)
             {
-                CurrentMode = CurrentMode == Mode.Tiles ? Mode.Walls : Mode.Tiles;
+                CurrentMode = CurrentMode == Mode.Tiles ? Mode.Walls : CurrentMode == Mode.Walls ? Mode.Camera : Mode.Tiles;
+                OverlayDirty = true;
                 LastPainted = null;
                 LastEdge = null;
                 BoxStart = null;
@@ -478,7 +504,7 @@ namespace EasyFloorPlanner
             }
             if (undo && Undo.Count > 0)
             {
-                Draft = Undo.Pop();
+                (Draft, DraftArea) = Undo.Pop();
                 AfterDraftChanged();
                 ShowMessage("Undone.");
             }
@@ -487,6 +513,10 @@ namespace EasyFloorPlanner
                 if (CurrentMode == Mode.Walls)
                 {
                     PickEdgeUnderCursor();
+                }
+                else if (CurrentMode == Mode.Camera)
+                {
+                    SetCameraArea(FloorPlanCameraArea.Whole);
                 }
                 else
                 {
@@ -524,6 +554,28 @@ namespace EasyFloorPlanner
                 {
                     LastPainted = CursorTile;
                     PaintAtCursor(paintPressed);
+                }
+            }
+            else if (CurrentMode == Mode.Camera)
+            {
+                // Drag a box: the area the day camera frames.
+                if (BoxStart.HasValue)
+                {
+                    if (paintDown)
+                    {
+                        BoxEnd = CursorTile;
+                    }
+                    else
+                    {
+                        LayoutPosition start = BoxStart.Value;
+                        BoxStart = null;
+                        SetCameraArea(FloorPlanCameraArea.Box(start.x, start.y, BoxEnd.x, BoxEnd.y));
+                    }
+                }
+                else if (paintPressed)
+                {
+                    BoxStart = CursorTile;
+                    BoxEnd = CursorTile;
                 }
             }
             else if (!paintDown)
@@ -568,10 +620,10 @@ namespace EasyFloorPlanner
             {
                 Tile = CursorTile,
                 Facing = CursorFacing,
-                Mode = (byte)(CurrentMode == Mode.Walls ? 1 : 0),
+                Mode = (byte)CurrentMode,
                 BrushLabel = CurrentBrushLabel
             };
-            bool draftChanged = !SentPreview || hash != LastPreviewHash;
+            bool draftChanged = !SentPreview || hash != LastPreviewHash || !DraftArea.SameAs(LastPreviewArea);
             bool cursorChanged = Data.SpectatorCount > 0 && !cursor.SameAs(LastPreviewCursor);
             if (!draftChanged && !cursorChanged)
             {
@@ -580,6 +632,7 @@ namespace EasyFloorPlanner
             SentPreview = true;
             LastPreviewHash = hash;
             LastPreviewCursor = cursor;
+            LastPreviewArea = DraftArea;
             NextPreviewAt = now + PreviewInterval;
             Outgoing.Enqueue(new FloorPlanResponse
             {
@@ -587,7 +640,8 @@ namespace EasyFloorPlanner
                 Action = FloorPlanAction.Preview,
                 // A copy: the draft is edited in place, and the response may be read later.
                 Draft = draftChanged ? new LayoutBlueprint(Draft) : null,
-                Cursor = cursor
+                Cursor = cursor,
+                CameraArea = DraftArea
             });
         }
 
@@ -632,6 +686,7 @@ namespace EasyFloorPlanner
         private void ResetDraft()
         {
             Draft = new LayoutBlueprint(Committed);
+            DraftArea = CommittedArea;
             Undo.Clear();
             AfterDraftChanged();
         }
@@ -661,7 +716,7 @@ namespace EasyFloorPlanner
             {
                 return; // nothing changed (same room, or erasing outdoors)
             }
-            Undo.Push(before);
+            Undo.Push((before, DraftArea));
             if (brush.IsNew)
             {
                 // The new room exists now; keep painting into it.
@@ -734,7 +789,7 @@ namespace EasyFloorPlanner
                 }
                 return;
             }
-            Undo.Push(before);
+            Undo.Push((before, DraftArea));
             if (brush.IsNew && Draft.Tiles.Values.Any(r => r.ID == room.ID))
             {
                 brush.Room = room;
@@ -776,7 +831,7 @@ namespace EasyFloorPlanner
             {
                 return; // already that
             }
-            Undo.Push(before);
+            Undo.Push((before, DraftArea));
             ShowMessage(brush.Label);
             AfterDraftChanged();
         }
@@ -814,7 +869,7 @@ namespace EasyFloorPlanner
             {
                 return;
             }
-            if (FloorPlanSerializer.Hash(Draft) == CommittedHash)
+            if (FloorPlanSerializer.Hash(Draft) == CommittedHash && DraftArea.SameAs(CommittedArea))
             {
                 RequestClose(); // nothing to apply
                 return;
@@ -879,7 +934,7 @@ namespace EasyFloorPlanner
 
         private void Enqueue(FloorPlanAction action, LayoutBlueprint draft)
         {
-            Outgoing.Enqueue(new FloorPlanResponse { Sequence = ++Sequence, Action = action, Draft = draft });
+            Outgoing.Enqueue(new FloorPlanResponse { Sequence = ++Sequence, Action = action, Draft = draft, CameraArea = DraftArea });
         }
 
         private void Refuse(string why, LayoutPosition where)
@@ -931,6 +986,10 @@ namespace EasyFloorPlanner
 
         private void CycleBrush(int step)
         {
+            if (CurrentMode == Mode.Camera)
+            {
+                return; // the camera area has no brushes
+            }
             if (CurrentMode == Mode.Walls)
             {
                 EdgeBrushIndex = (EdgeBrushIndex + step + EdgeBrushes.Length) % EdgeBrushes.Length;
@@ -947,6 +1006,27 @@ namespace EasyFloorPlanner
                 BrushIndex = i;
                 ShowMessage("Brush: " + Brushes[i].Label);
             }
+        }
+
+        /// <summary>Sets the drafted camera area (one undo step), or refuses it.</summary>
+        private void SetCameraArea(FloorPlanCameraArea area)
+        {
+            string problem = CameraAreaMarkers.Problem(area);
+            if (problem != null)
+            {
+                Refuse(problem, CursorTile);
+                return;
+            }
+            if (area.SameAs(DraftArea))
+            {
+                return;
+            }
+            Undo.Push((new LayoutBlueprint(Draft), DraftArea));
+            DraftArea = area;
+            OverlayDirty = true;
+            ShowMessage(area.Custom
+                ? $"The day camera will frame this {area.Width} x {area.Height} area."
+                : "The day camera will frame the whole restaurant.");
         }
 
         // ================================================================= visuals
@@ -1252,6 +1332,8 @@ namespace EasyFloorPlanner
                 }
             }
 
+            DrawCameraArea();
+
             for (int i = PoolUsed; i < Pool.Count; i++)
             {
                 Pool[i].gameObject.SetActive(false);
@@ -1314,6 +1396,50 @@ namespace EasyFloorPlanner
             }
         }
 
+        /// <summary>
+        /// The drafted camera area's outline: bright in camera mode, faint otherwise. In camera
+        /// mode without a custom area, the whole restaurant is outlined instead.
+        /// </summary>
+        private void DrawCameraArea()
+        {
+            bool cameraMode = CurrentMode == Mode.Camera;
+            FloorPlanCameraArea area = DraftArea;
+            if (!area.Custom)
+            {
+                if (!cameraMode || !TryIndoorRect(Draft, out area))
+                {
+                    return;
+                }
+            }
+            Color c = CameraColour;
+            c.a = cameraMode ? (DraftArea.Custom ? 0.95f : 0.5f) : 0.4f;
+            float x0 = area.MinX - 0.5f, x1 = area.MaxX + 0.5f, y0 = area.MinY - 0.5f, y1 = area.MaxY + 0.5f;
+            const float t = 0.14f;
+            Take(c, new Vector2((x0 + x1) / 2f, y1), new Vector2(x1 - x0 + t, t));
+            Take(c, new Vector2((x0 + x1) / 2f, y0), new Vector2(x1 - x0 + t, t));
+            Take(c, new Vector2(x0, (y0 + y1) / 2f), new Vector2(t, y1 - y0 + t));
+            Take(c, new Vector2(x1, (y0 + y1) / 2f), new Vector2(t, y1 - y0 + t));
+        }
+
+        /// <summary>The rectangle around the layout's indoor tiles.</summary>
+        private static bool TryIndoorRect(LayoutBlueprint bp, out FloorPlanCameraArea rect)
+        {
+            rect = default;
+            bool any = false;
+            foreach (KeyValuePair<LayoutPosition, Room> t in bp.Tiles)
+            {
+                if (!LayoutHelpers.IsInside(t.Value))
+                {
+                    continue;
+                }
+                rect = any
+                    ? FloorPlanCameraArea.Box(Math.Min(rect.MinX, t.Key.x), Math.Min(rect.MinY, t.Key.y), Math.Max(rect.MaxX, t.Key.x), Math.Max(rect.MaxY, t.Key.y))
+                    : FloorPlanCameraArea.Box(t.Key.x, t.Key.y, t.Key.x, t.Key.y);
+                any = true;
+            }
+            return any;
+        }
+
         private void EdgeBar(LayoutPosition a, LayoutPosition b, Color c, float thickness)
         {
             Vector2 mid = new Vector2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
@@ -1337,8 +1463,8 @@ namespace EasyFloorPlanner
             {
                 LayoutPosition a = BoxStart.Value;
                 float x0 = Mathf.Min(a.x, BoxEnd.x), x1 = Mathf.Max(a.x, BoxEnd.x), y0 = Mathf.Min(a.y, BoxEnd.y), y1 = Mathf.Max(a.y, BoxEnd.y);
-                Color boxColour = BrushColour(Brushes[BrushIndex]);
-                boxColour.a = 0.35f;
+                Color boxColour = CurrentMode == Mode.Camera ? CameraColour : BrushColour(Brushes[BrushIndex]);
+                boxColour.a = CurrentMode == Mode.Camera ? 0.25f : 0.35f;
                 BoxImage.color = boxColour;
                 BoxImage.rectTransform.anchoredPosition = new Vector2((x0 + x1) * 0.5f, (y0 + y1) * 0.5f);
                 BoxImage.rectTransform.sizeDelta = new Vector2(x1 - x0 + 1f, y1 - y0 + 1f);
@@ -1359,9 +1485,10 @@ namespace EasyFloorPlanner
             Color edgeColour = EdgeBrushes[EdgeBrushIndex].Colour;
             Color c = Spectating ? new Color(EditorColour.r, EditorColour.g, EditorColour.b, pulse)
                 : CurrentMode == Mode.Walls ? new Color(edgeColour.r, edgeColour.g, edgeColour.b, pulse)
+                : CurrentMode == Mode.Camera ? new Color(CameraColour.r, CameraColour.g, CameraColour.b, pulse)
                 : blocked ? new Color(1f, 0.25f, 0.2f, pulse) : new Color(1f, 1f, 1f, pulse);
             var p = new Vector2(CursorTile.x, CursorTile.y);
-            if (CurrentMode == Mode.Tiles)
+            if (CurrentMode != Mode.Walls)
             {
                 SetBar(0, p + new Vector2(0f, 0.47f), new Vector2(1f, 0.07f), c);
                 SetBar(1, p + new Vector2(0f, -0.47f), new Vector2(1f, 0.07f), c);
@@ -1403,19 +1530,26 @@ namespace EasyFloorPlanner
             {
                 return;
             }
-            Color brushColour = CurrentMode == Mode.Walls ? EdgeBrushes[EdgeBrushIndex].Colour : BrushColour(Brushes[BrushIndex]);
+            Color brushColour = CurrentMode == Mode.Walls ? EdgeBrushes[EdgeBrushIndex].Colour
+                : CurrentMode == Mode.Camera ? CameraColour
+                : BrushColour(Brushes[BrushIndex]);
             string colour = ColorUtility.ToHtmlStringRGB(brushColour);
-            string mode = CurrentMode == Mode.Tiles ? "Paint floor" : "Walls, hatches & doors";
+            string mode = ModeName(CurrentMode);
             string watchers = Data.SpectatorCount > 0 ? $"   -   {Data.SpectatorCount} watching" : "";
             // Plain dashes: the game's font has no "|" or bullet glyphs (they render as "Y").
-            HudTitle.text = $"FLOOR PLAN   -   {mode}   -   Brush: <color=#{colour}>{CurrentBrushLabel}</color>{watchers}";
+            string label = CurrentMode == Mode.Camera ? "" : "Brush: ";
+            HudTitle.text = $"FLOOR PLAN   -   {mode}   -   {label}<color=#{colour}>{CurrentBrushLabel}</color>{watchers}";
             HudHelp.text = UsesMouse
                 ? (CurrentMode == Mode.Tiles
-                    ? "Left click/drag: paint   Shift+drag: box   Right click: pick room   Q/E or wheel: change brush   Tab: walls\nWASD: move view   Ctrl+Z: undo   Enter: apply   Esc: cancel"
-                    : "Left click/drag walls: set to brush   Right click: pick from a wall   Q/E or wheel: wall / hatch / door   Tab: floor\nWASD: move view   Ctrl+Z: undo   Enter: apply   Esc: cancel")
+                    ? "Left click/drag: paint   Shift+drag: box   Right click: pick room   Q/E or wheel: change brush   Tab: walls\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel"
+                    : CurrentMode == Mode.Walls
+                    ? "Left click/drag walls: set to brush   Right click: pick from a wall   Q/E or wheel: wall / hatch / door   Tab: camera area\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel"
+                    : "Left drag: draw the area the day camera frames   Right click: whole restaurant   Tab: floor\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel")
                 : (CurrentMode == Mode.Tiles
-                    ? "Interact (hold): paint   Grab: pick room   Secondary 1: change brush   Secondary 2: walls\nStick: move view (cursor at centre)   Stop: undo   Select: apply   Back: cancel"
-                    : "Interact (hold): set the wall nearest the centre   Grab: pick from a wall   Secondary 1: wall / hatch / door   Secondary 2: floor\nStick: move view   Stop: undo   Select: apply   Back: cancel");
+                    ? "Interact (hold): paint   Grab: pick room   Secondary 1: change brush   Secondary 2: walls\nStick: move view (cursor at centre)   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel"
+                    : CurrentMode == Mode.Walls
+                    ? "Interact (hold): set the wall nearest the centre   Grab: pick from a wall   Secondary 1: wall / hatch / door   Secondary 2: camera area\nStick: move view   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel"
+                    : "Hold Interact and move the view: draw the area the day camera frames   Grab: whole restaurant   Secondary 2: floor\nStick: move view   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel");
 
             string status;
             if (Time.unscaledTime < MessageUntil)
@@ -1434,6 +1568,8 @@ namespace EasyFloorPlanner
             HudStatus.text = status;
         }
 
+        private static string ModeName(Mode m) => m == Mode.Tiles ? "Paint floor" : m == Mode.Walls ? "Walls, hatches & doors" : "Camera area";
+
         /// <summary>"Draft: +a floor, ..." or null when the draft equals the committed layout.</summary>
         private string DraftSummary()
         {
@@ -1442,9 +1578,13 @@ namespace EasyFloorPlanner
             int moved = Draft.Tiles.Count(t => LayoutHelpers.IsInside(t.Value) && Committed.Tiles.TryGetValue(t.Key, out Room r) && LayoutHelpers.IsInside(r) && r.ID != t.Value.ID);
             int edges = Draft.Features.Count(f => !Committed.Features.Any(c => c.Type == f.Type && SameEdge(c, f.Tile1, f.Tile2)))
                         + Committed.Features.Count(f => !Draft.Features.Any(d => d.Type == f.Type && SameEdge(d, f.Tile1, f.Tile2)));
-            return added + removed + moved + edges == 0
-                ? null
-                : $"Draft: +{added} floor, -{removed} floor, {moved} moved between rooms, {edges} wall change(s).";
+            bool area = !DraftArea.SameAs(CommittedArea);
+            if (added + removed + moved + edges == 0)
+            {
+                return area ? $"Draft: camera area changed ({AreaLabel(DraftArea).Substring("Day view: ".Length)})." : null;
+            }
+            string camera = area ? ", camera area changed" : "";
+            return $"Draft: +{added} floor, -{removed} floor, {moved} moved between rooms, {edges} wall change(s){camera}.";
         }
 
         private void UpdateSpectatorHud()
@@ -1457,7 +1597,7 @@ namespace EasyFloorPlanner
             string detail = "";
             if (CursorPlaced)
             {
-                string mode = CurrentMode == Mode.Tiles ? "Painting floor" : "Walls, hatches & doors";
+                string mode = CurrentMode == Mode.Tiles ? "Painting floor" : ModeName(CurrentMode);
                 string brush = Plain(Data.Cursor.BrushLabel, 40);
                 detail = brush.Length > 0 ? $"   -   {mode}   -   Brush: {brush}" : $"   -   {mode}";
             }
@@ -1487,7 +1627,7 @@ namespace EasyFloorPlanner
         {
             Tile = CursorTile,
             Facing = CursorFacing,
-            Mode = (byte)(CurrentMode == Mode.Walls ? 1 : 0),
+            Mode = (byte)CurrentMode,
             BrushLabel = Spectating ? Data.Cursor.BrushLabel : CurrentBrushLabel
         };
 
@@ -1497,7 +1637,7 @@ namespace EasyFloorPlanner
         {
             if (Undo.Count > 0)
             {
-                Draft = Undo.Pop();
+                (Draft, DraftArea) = Undo.Pop();
                 AfterDraftChanged();
                 RebuildOverlay();
             }
@@ -1605,6 +1745,18 @@ namespace EasyFloorPlanner
                 return $"'{text}' font={t.font?.name} chars={t.textInfo.characterCount} visible={t.textInfo.characterCount - t.textInfo.spaceCount} lines={t.textInfo.lineCount} rect={r.width:0}x{r.height:0} overflow={t.isTextOverflowing} active={t.gameObject.activeInHierarchy} alpha={t.color.a:0.00}";
             }
             return $"title: {One(HudTitle)} | help: {One(HudHelp)} | status: {One(HudStatus)}";
+        }
+
+        internal FloorPlanCameraArea TestDraftArea => DraftArea;
+        internal FloorPlanCameraArea TestCommittedArea => CommittedArea;
+
+        /// <summary>Draws a camera area as a drag in camera mode would (null = right click: whole restaurant).</summary>
+        internal void TestSetCameraArea(LayoutPosition? a, LayoutPosition b)
+        {
+            CurrentMode = Mode.Camera;
+            Message = "";
+            SetCameraArea(a.HasValue ? FloorPlanCameraArea.Box(a.Value.x, a.Value.y, b.x, b.y) : FloorPlanCameraArea.Whole);
+            RebuildOverlay();
         }
 
         internal void TestApply()

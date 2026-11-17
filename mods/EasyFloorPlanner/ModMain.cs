@@ -16,7 +16,7 @@ namespace EasyFloorPlanner
     {
         public const string Id = "zambie.easyfloorplanner";
         public const string Name = "Easy Floor Planner";
-        public const string Version = "0.1.0";
+        public const string Version = "0.2.0";
 
         private static Harmony _harmony;
         private static bool _resolverRegistered;
@@ -30,6 +30,7 @@ namespace EasyFloorPlanner
                 _harmony = new Harmony(Id);
                 _harmony.PatchAll(typeof(ModMain).Assembly);
             }
+            PlayCamera.Install();
 #if DEBUG
             SelfTest.TryActivate();
 #endif

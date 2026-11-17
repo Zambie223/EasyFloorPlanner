@@ -106,12 +106,14 @@ namespace EasyFloorPlanner
         /// <summary>Result of the last bounds sync, for logging and the self-test.</summary>
         public static (int movedDayPoints, int removedNightPoints) LastBoundsSync { get; private set; }
 
+        /// <summary>Whether the last bounds sync kept a custom camera area (instead of moving the day markers).</summary>
+        public static bool LastAreaKept { get; private set; }
+
         private static readonly Type NightBoundType = typeof(ExpandBoundsAtNight).GetNestedType("CNightBound", BindingFlags.NonPublic);
 
         /// <summary>
-        /// The four day-camera markers vanilla's CreateNewKitchen.AddBoundPoint creates (marker views
-        /// with CMaintainInView), from CBounds, in this order. They carry no tag, so we find them by
-        /// their computed old positions.
+        /// Where vanilla's CreateNewKitchen.AddBoundPoint puts the four day-camera markers for these
+        /// bounds, in this order. CameraAreaMarkers finds the markers themselves (by kind).
         /// </summary>
         public static Vector3[] DayBoundPoints(Bounds b)
         {
@@ -143,27 +145,20 @@ namespace EasyFloorPlanner
 
         private static void SyncBoundsDependents(EntityManager em, Bounds before, Bounds after)
         {
-            // Day camera: move the markers that sit exactly where vanilla put them.
-            Vector3[] oldPoints = DayBoundPoints(before);
-            Vector3[] newPoints = DayBoundPoints(after);
+            // Day camera: a whole-restaurant framing follows the new bounds; a custom camera area
+            // (chosen in the editor) stays where it is.
             int moved = 0;
-            EntityQuery day = em.CreateEntityQuery(ComponentType.ReadOnly<CMaintainInView>(), ComponentType.ReadWrite<CPosition>(), ComponentType.ReadOnly<CRequiresView>());
-            NativeArray<Entity> dayEntities = day.ToEntityArray(Allocator.Temp);
-            foreach (Entity e in dayEntities)
+            FloorPlanCameraArea area = CameraAreaMarkers.Read(em, before);
+            if (area.Custom)
             {
-                Vector3 p = em.GetComponentData<CPosition>(e).Position;
-                for (int i = 0; i < oldPoints.Length; i++)
-                {
-                    if ((p - oldPoints[i]).sqrMagnitude < 0.0001f)
-                    {
-                        em.SetComponentData(e, new CPosition(newPoints[i]));
-                        moved++;
-                        break;
-                    }
-                }
+                LastAreaKept = true;
+                ModMain.Log($"Kept the custom camera area {area} after the resize.");
             }
-            dayEntities.Dispose();
-            day.Dispose();
+            else
+            {
+                LastAreaKept = false;
+                moved = CameraAreaMarkers.Write(em, after, FloorPlanCameraArea.Whole);
+            }
 
             // Night camera: ExpandBoundsAtNight recreates its markers from CBounds when none exist.
             int removed = 0;
@@ -180,7 +175,7 @@ namespace EasyFloorPlanner
             }
 
             LastBoundsSync = (moved, removed);
-            if (moved != 4)
+            if (moved != 4 && !area.Custom)
             {
                 ModMain.LogWarning($"Moved {moved} of 4 day-camera bound markers; the camera may not frame the new size exactly.");
             }

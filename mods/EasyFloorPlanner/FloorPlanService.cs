@@ -36,6 +36,7 @@ namespace EasyFloorPlanner
             public LayoutBlueprint Draft;
             public int DraftHash;
             public FloorPlanCursor Cursor;
+            public FloorPlanCameraArea Area;
         }
 
         private EntityQuery Terminals;
@@ -395,6 +396,7 @@ namespace EasyFloorPlanner
                 {
                     p.Sequence = response.Sequence;
                     p.Cursor = response.Cursor;
+                    p.Area = response.CameraArea;
                     if (response.Draft != null)
                     {
                         p.Draft = response.Draft;
@@ -417,7 +419,7 @@ namespace EasyFloorPlanner
                     return;
 
                 case FloorPlanAction.Apply:
-                    string error = TryApply(response.Draft);
+                    string error = TryApply(response.Draft, response.CameraArea);
                     if (error == null)
                     {
                         CloseSession(session, "changes applied");
@@ -435,8 +437,12 @@ namespace EasyFloorPlanner
             Statuses[session] = status;
         }
 
-        /// <summary>Validates the draft against the live layout and commits it. Returns the reason if refused.</summary>
-        private string TryApply(LayoutBlueprint draft)
+        /// <summary>
+        /// Validates the draft against the live layout and commits it, then sets the camera area.
+        /// Either can be unchanged: a camera-area-only Apply doesn't rebuild the restaurant.
+        /// Returns the reason if refused (nothing is changed then).
+        /// </summary>
+        private string TryApply(LayoutBlueprint draft, FloorPlanCameraArea area)
         {
             if (draft == null)
             {
@@ -446,22 +452,50 @@ namespace EasyFloorPlanner
             {
                 return "the layout can only be changed at night";
             }
+            string areaProblem = CameraAreaMarkers.Problem(area);
+            if (areaProblem != null)
+            {
+                ModMain.Log($"Refused a floor plan draft: {areaProblem}");
+                return areaProblem;
+            }
             Entity layout = GetSingletonEntity<SLayout>();
             LayoutBlueprint live = LayoutWriter.Read(EntityManager, layout);
-            OccupancySnapshot occupancy = OccupancySnapshot.Take(EntityManager, TileManager);
-            string error = LayoutEdits.ValidateDraft(live, draft, occupancy.BlocksEdit);
-            if (error != null)
+            bool layoutChanged = FloorPlanSerializer.Hash(live) != FloorPlanSerializer.Hash(draft);
+            if (layoutChanged)
             {
-                ModMain.Log($"Refused a floor plan draft: {error}");
-                return error;
+                OccupancySnapshot occupancy = OccupancySnapshot.Take(EntityManager, TileManager);
+                string error = LayoutEdits.ValidateDraft(live, draft, occupancy.BlocksEdit);
+                if (error != null)
+                {
+                    ModMain.Log($"Refused a floor plan draft: {error}");
+                    return error;
+                }
+                if (!LayoutWriter.IsAvailable)
+                {
+                    return "layout editing is unavailable (see the log)";
+                }
+                LayoutCommit.Result r = LayoutCommit.Commit(EntityManager, TileManager, layout, draft);
+                ModMain.Log($"Applied a floor plan draft: {draft.Tiles.Count} tiles, {draft.Features.Count} features; scenery moved {r.SceneryMoved}, removed {r.SceneryRemoved}.");
             }
-            if (!LayoutWriter.IsAvailable)
+
+            // After the commit, which may have resized the restaurant (and moved a whole-restaurant framing with it).
+            Bounds bounds = EntityManager.GetComponentData<CBounds>(layout).Bounds;
+            area = CameraAreaMarkers.Normalise(area, bounds);
+            if (!area.SameAs(CameraAreaMarkers.Read(EntityManager, bounds)))
             {
-                return "layout editing is unavailable (see the log)";
+                int placed = CameraAreaMarkers.Write(EntityManager, bounds, area);
+                ModMain.Log(placed == 4 ? $"Camera area set to the {area}." : "The camera area couldn't be set (see above).");
             }
-            LayoutCommit.Result r = LayoutCommit.Commit(EntityManager, TileManager, layout, draft);
-            ModMain.Log($"Applied a floor plan draft: {draft.Tiles.Count} tiles, {draft.Features.Count} features; scenery moved {r.SceneryMoved}, removed {r.SceneryRemoved}.");
             return null;
+        }
+
+        /// <summary>The camera area in effect now.</summary>
+        public FloorPlanCameraArea CurrentCameraArea()
+        {
+            Entity layout = GetSingletonEntity<SLayout>();
+            return EntityManager.HasComponent<CBounds>(layout)
+                ? CameraAreaMarkers.Read(EntityManager, EntityManager.GetComponentData<CBounds>(layout).Bounds)
+                : FloorPlanCameraArea.Whole;
         }
 
         /// <summary>Tiles an edit can't change, near the building (sent to the editor for live feedback).</summary>
@@ -595,6 +629,7 @@ namespace EasyFloorPlanner
 
             LayoutBlueprint layout = LayoutWriter.Read(EntityManager, GetSingletonEntity<SLayout>());
             int layoutHash = FloorPlanSerializer.Hash(layout);
+            FloorPlanCameraArea cameraArea = Service.CurrentCameraArea();
             List<LayoutPosition> blocked = Service.BlockedTiles(layout);
             int blockedHash = 17;
             unchecked
@@ -639,7 +674,8 @@ namespace EasyFloorPlanner
                     AckSequence = status.AckSequence,
                     LastSucceeded = status.LastSucceeded,
                     Status = status.Message ?? "",
-                    SpectatorCount = spectatorCount
+                    SpectatorCount = spectatorCount,
+                    CameraArea = cameraArea
                 });
             }
 
@@ -664,7 +700,9 @@ namespace EasyFloorPlanner
                     SpectatorCount = watching.Count(o => o.spectator.Session == w.Session),
                     Preview = preview?.Draft,
                     PreviewHash = preview?.DraftHash ?? 0,
-                    Cursor = preview?.Cursor ?? default
+                    Cursor = preview?.Cursor ?? default,
+                    CameraArea = cameraArea,
+                    PreviewArea = preview != null ? preview.Area : cameraArea
                 });
             }
         }

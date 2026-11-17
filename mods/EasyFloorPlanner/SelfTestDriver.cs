@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using Kitchen;
 using Kitchen.Layouts;
 using Kitchen.Layouts.Features;
@@ -241,6 +242,10 @@ namespace EasyFloorPlanner
                 StepGrowFarWest, StepVerifyFarLighting,
                 StepWeatherForce, StepRainMeasure, StepWeatherShot, StepWeatherOff,
                 StepShrinkFarWest,
+                StepAreaKeptAfterResize,
+                StepAreaReopen, StepAreaVerifyReopened, StepAreaReset, StepAreaVerifyReset,
+                StepPlayCamera, StepPlayCameraZoom, StepPlayCameraPan, StepPlayCameraFollow, StepPlayCameraReset,
+                StepCameraControlsPause, StepCameraControlsOpen, StepCameraControlsPages,
                 StepPrepareDayLayout, StepVerifyDayLayout,
                 StepSaveToMemory, StepVerifySaved,
                 StepReload, StepVerifyReload,
@@ -1440,8 +1445,30 @@ namespace EasyFloorPlanner
                 return;
             }
             view.TestSetVisible(true);
+
+            // Also draft a camera area (a 5 x 4 corner of the restaurant), applied with the layout.
+            (int minX, int minY, int _, int _) = CameraAreaMarkers.Rect(CurrentBounds());
+            _areaExpected = FloorPlanCameraArea.Box(minX, minY, minX + 4, minY + 3);
+            view.TestSetCameraArea(new LayoutPosition(minX, minY), new LayoutPosition(minX + 4, minY + 3));
+            Check(view.TestDraftArea.SameAs(_areaExpected), $"the editor drafts the camera area {view.TestDraftArea} (expected {_areaExpected})");
+            Shot("14b-camera-area-drafted");
+
             view.TestApply();
             Log($"applied the draft ({view.TestMessage}).");
+        }
+
+        private static FloorPlanCameraArea _areaExpected;
+
+        /// <summary>Whether the four day markers frame <paramref name="area"/> (Whole: the bounds).</summary>
+        private bool MarkersFrame(FloorPlanCameraArea area, out string detail)
+        {
+            Bounds b = CurrentBounds();
+            Bounds target = area.Custom ? CameraAreaMarkers.TileBounds(area.MinX, area.MinY, area.MaxX, area.MaxY) : b;
+            Vector3[] expected = LayoutWriter.DayBoundPoints(target);
+            List<Entity> markers = CameraAreaMarkers.DayMarkers(EntityManager);
+            int hits = expected.Count(p => markers.Any(m => (EntityManager.GetComponentData<CPosition>(m).Position - p).sqrMagnitude < 0.0001f));
+            detail = $"{markers.Count} markers, {hits} of 4 where expected; reads as {CameraAreaMarkers.Read(EntityManager, b)}";
+            return markers.Count == 4 && hits == 4;
         }
 
         private void StepEditVerifyApplied()
@@ -1473,7 +1500,274 @@ namespace EasyFloorPlanner
             LayoutView v = LayoutViews().FirstOrDefault();
             Check(v?.Builder != null && v.Builder.Blueprint.Features.Any(f => f.Type == FeatureType.Door && SameEdge(f, _editNewA, _editGrowA)), "the rebuilt restaurant has the new door");
             Check(PathLength(_editNewB, _editGrowB) > 0f, "navmesh path from the new room into the grown room");
+            Check(MarkersFrame(_areaExpected, out string markers), $"the day camera markers frame the applied camera area {_areaExpected} ({markers})");
             Shot("15-editor-applied");
+        }
+
+        // ---- camera area (chosen in the editor) and the play camera ----
+
+        private void StepAreaKeptAfterResize()
+        {
+            // The far-west strip grew and shrank the restaurant with a custom area in effect.
+            Check(LayoutWriter.LastAreaKept && LayoutWriter.LastBoundsSync.movedDayPoints == 0,
+                $"a resize keeps a custom camera area (kept {LayoutWriter.LastAreaKept}, markers moved {LayoutWriter.LastBoundsSync.movedDayPoints})");
+            Check(MarkersFrame(_areaExpected, out string markers), $"the camera area is unchanged after the far-west strip came and went ({markers})");
+        }
+
+        private int _areaLayoutHash;
+
+        private void StepAreaReopen()
+        {
+            List<Entity> players = AllWith<CPlayer>();
+            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
+            if (players.Count == 0 || service == null)
+            {
+                Fail("no player or no FloorPlanService to reopen the editor with");
+                return;
+            }
+            _areaLayoutHash = FloorPlanSerializer.Hash(ReadLayout());
+            service.RequestOpen(players[0]);
+        }
+
+        private void StepAreaVerifyReopened()
+        {
+            FloorPlanView view = FloorPlanView.TestInstance;
+            if ((view == null || !view.TestReady || !view.TestCommittedArea.Custom) && StepElapsed < 10f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            if (view == null || !view.TestReady)
+            {
+                Fail("the editor didn't reopen within 10s");
+                return;
+            }
+            Check(view.TestCommittedArea.SameAs(_areaExpected) && view.TestDraftArea.SameAs(_areaExpected),
+                $"a reopened editor starts from the camera area in effect ({view.TestCommittedArea})");
+            var framing = PlayCamera.TestFraming;
+            Check(framing != null && Mathf.Abs(framing.m_ScreenY - PlayCamera.TestVanillaScreenY) < 0.001f && Mathf.Abs(PlayCamera.TestEditorZoom - 1f) < 0.001f,
+                $"in the editor the play camera's HUD margin and pan are off (screen y {framing?.m_ScreenY:0.000}, vanilla {PlayCamera.TestVanillaScreenY:0.000})");
+            view.TestSetCameraArea(new LayoutPosition(_areaExpected.MinX, _areaExpected.MinY), new LayoutPosition(_areaExpected.MaxX, _areaExpected.MaxY)); // same area: just shows camera mode
+            Shot("16-camera-area-mode");
+        }
+
+        private void StepAreaReset()
+        {
+            FloorPlanView view = FloorPlanView.TestInstance;
+            if (view == null || !view.TestReady)
+            {
+                Fail("no editor to reset the camera area in");
+                return;
+            }
+            view.TestSetCameraArea(null, default);
+            Check(!view.TestDraftArea.Custom, "right click (Grab) in camera mode drafts the whole restaurant");
+            view.TestApply(); // the layout is unchanged: a camera-only apply
+        }
+
+        private void StepAreaVerifyReset()
+        {
+            if (AllWith<CFloorPlanSession>().Count > 0 && StepElapsed < 8f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Check(AllWith<CFloorPlanSession>().Count == 0, "a camera-only apply closes the editor");
+            Check(FloorPlanSerializer.Hash(ReadLayout()) == _areaLayoutHash, "a camera-only apply leaves the layout as it was");
+            Check(MarkersFrame(FloorPlanCameraArea.Whole, out string markers), $"the day camera frames the whole restaurant again ({markers})");
+        }
+
+        private float _fovBefore;
+        private float _centreYBefore;
+
+        private Vector3 RestaurantCentre()
+        {
+            Bounds b = CurrentBounds();
+            return new Vector3(b.center.x, 0f, b.center.z);
+        }
+
+        private void StepPlayCamera()
+        {
+            var framing = PlayCamera.TestFraming;
+            if ((framing == null || !PlayCamera.TestApplied || FloorPlanCamera.Active || !FloorPlanCamera.TestTiltDone) && StepElapsed < 8f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Check(framing != null && PlayCamera.TestApplied, $"the play camera is active in the restaurant ({PlayCamera.TestDiagnostics})");
+            if (framing == null)
+            {
+                return;
+            }
+            float expectY = PlayCamera.TestVanillaScreenY - PlayCamera.HudFraction / 2f;
+            float expectSize = PlayCamera.TestVanillaSize * (1f - PlayCamera.HudFraction);
+            Check(Mathf.Abs(framing.m_ScreenY - expectY) < 0.001f && Mathf.Abs(framing.m_GroupFramingSize - expectSize) < 0.001f,
+                $"the HUD margin is applied (screen y {framing.m_ScreenY:0.000}, framing {framing.m_GroupFramingSize:0.000}; expected {expectY:0.000}, {expectSize:0.000})");
+            Camera cam = Camera.main;
+            Bounds b = CurrentBounds();
+            Vector3 front = new Vector3(b.center.x, 0f, b.min.z - 0.5f);
+            float frontY = cam != null ? cam.WorldToViewportPoint(front).y : -1f;
+            Check(frontY > PlayCamera.HudFraction, $"the front of the restaurant is above the player cards (viewport y {frontY:0.000}, cards below {PlayCamera.HudFraction})");
+            _fovBefore = cam != null ? cam.fieldOfView : 0f;
+            Log($"play camera: FOV {_fovBefore:0.0}, front edge at viewport y {frontY:0.000}.");
+            Shot("17-play-camera-hud-margin");
+        }
+
+        private void StepPlayCameraZoom()
+        {
+            if (StepElapsed < 0.1f)
+            {
+                PlayCamera.TestSet(2f, Vector2.zero);
+            }
+            float fov = Camera.main != null ? Camera.main.fieldOfView : 0f;
+            if (fov > _fovBefore * 0.7f && StepElapsed < 5f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Check(fov < _fovBefore * 0.7f, $"zooming in narrows the view (FOV {fov:0.0}, was {_fovBefore:0.0})");
+            _centreYBefore = Camera.main != null ? Camera.main.WorldToViewportPoint(RestaurantCentre()).y : 0f;
+            Shot("18-play-camera-zoomed");
+        }
+
+        private void StepPlayCameraPan()
+        {
+            if (StepElapsed < 0.1f)
+            {
+                PlayCamera.TestSet(2f, new Vector2(0f, -0.3f)); // look further down (towards the street)
+            }
+            float y = Camera.main != null ? Camera.main.WorldToViewportPoint(RestaurantCentre()).y : 0f;
+            if (y < _centreYBefore + 0.2f && StepElapsed < 5f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Check(y > _centreYBefore + 0.2f, $"panning down moves the restaurant up the screen (centre at viewport y {y:0.000}, was {_centreYBefore:0.000})");
+            Shot("19-play-camera-panned");
+        }
+
+        private void StepPlayCameraFollow()
+        {
+            if (StepElapsed < 0.1f)
+            {
+                PlayCamera.TestSetFollowSilently(true);
+                PlayCamera.TestSet(2.5f, new Vector2(0.9f, 0.9f)); // far away from the chef
+            }
+            Camera cam = Camera.main;
+            List<Entity> players = AllWith<CPlayer>();
+            Vector3 chef = players.Count > 0 ? GetComponent<CPosition>(players[0]).Position : Vector3.zero;
+            Vector3 v = cam != null ? cam.WorldToViewportPoint(chef) : new Vector3(-1f, -1f, 0f);
+            bool inView = v.x > 0.1f && v.x < 0.9f && v.y > 0.1f && v.y < 0.9f;
+            if (!inView && StepElapsed < 6f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Check(PlayCamera.TestLocalChefCount >= 1, $"follow finds this machine's chef ({PlayCamera.TestLocalChefCount})");
+            Check(inView, $"follow brings the chef back into view when zoomed in (viewport {v.x:0.00}, {v.y:0.00}; pan {PlayCamera.Pan})");
+            Shot("20-play-camera-follow");
+            PlayCamera.TestSetFollowSilently(false);
+        }
+
+        // ---- "Camera Controls" in the pause menu ----
+
+        private static PlayerPauseView _pause;
+        private static int _shotPage = -1;
+
+        private static void CallPause(string method, params object[] args)
+        {
+            MethodInfo m = HarmonyLib.AccessTools.Method(typeof(PlayerPauseView), method);
+            if (m == null)
+            {
+                throw new MissingMethodException(nameof(PlayerPauseView), method);
+            }
+            m.Invoke(_pause, args);
+        }
+
+        private void StepCameraControlsPause()
+        {
+            _pause = UnityEngine.Object.FindObjectOfType<PlayerPauseView>();
+            List<Entity> players = AllWith<CPlayer>();
+            if (_pause == null || players.Count == 0)
+            {
+                Fail("no pause view (or no player) to open the pause menu with");
+                return;
+            }
+            if (StepElapsed < 0.1f)
+            {
+                // What pressing the menu button does (PlayerPauseView.TakeInput).
+                int id = GetComponent<CPlayer>(players[0]).ID;
+                CallPause("CreateForPlayer", id);
+                CallPause("SetPlayer", id);
+                Retry(1f);
+                return;
+            }
+            bool button = _pause.GetComponentsInChildren<TMPro.TextMeshPro>(true).Any(t => t.text == CameraControlsButtonPatch.Label);
+            Check(button, $"the pause menu has a \"{CameraControlsButtonPatch.Label}\" button");
+            Shot("21-pause-menu");
+        }
+
+        private void StepCameraControlsOpen()
+        {
+            if (_pause == null)
+            {
+                return;
+            }
+            CallPause("SetMenu", typeof(CameraControlsMenu), false, false);
+        }
+
+        private void StepCameraControlsPages()
+        {
+            CameraControlsElement panel = UnityEngine.Object.FindObjectOfType<CameraControlsElement>();
+            if (panel == null && StepElapsed < 3f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Check(panel != null, "the Camera Controls panel opens from the pause menu");
+            if (panel == null)
+            {
+                _pause?.Hide();
+                return;
+            }
+            // Page through like the Recipes panel. A screenshot is captured at the end of the frame,
+            // so each page is shot on one call and turned on the next.
+            int page = panel.TestPage;
+            if (_shotPage != page)
+            {
+                _shotPage = page;
+                Shot($"22-camera-controls-page{page + 1}");
+                Retry(0.6f);
+                return;
+            }
+            if (page < CameraControlsElement.PageCount - 1)
+            {
+                panel.HandleInteraction(new Controllers.InputState { MenuRight = Controllers.ButtonState.Pressed });
+                Retry(0.6f);
+                return;
+            }
+            Check(panel.TestPage == CameraControlsElement.PageCount - 1, $"the panel pages through to the last page ({panel.TestPage + 1} of {CameraControlsElement.PageCount})");
+            for (int i = 0; i < CameraControlsElement.PageCount; i++)
+            {
+                (string title, string body) = CameraControlsElement.Content(i);
+                Log($"camera controls page {i + 1}: {title}: {body.Replace("\n", " / ")}");
+            }
+            _pause.Hide();
+            Check(!_pause.GetComponentsInChildren<CameraControlsElement>(false).Any(), "closing the pause menu hides the panel");
+        }
+
+        private void StepPlayCameraReset()
+        {
+            if (StepElapsed < 0.1f)
+            {
+                PlayCamera.TestSet(1f, Vector2.zero);
+            }
+            float fov = Camera.main != null ? Camera.main.fieldOfView : 0f;
+            if (Mathf.Abs(fov - _fovBefore) > _fovBefore * 0.02f && StepElapsed < 6f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Check(Mathf.Abs(fov - _fovBefore) <= _fovBefore * 0.02f, $"resetting the view restores the framing (FOV {fov:0.0}, was {_fovBefore:0.0})");
         }
 
         // ---- scenery bulldozer: grow into outdoor scenery ----
@@ -2567,15 +2861,42 @@ namespace EasyFloorPlanner
                     }
                 }
             }
+            // Settings with more customers (Turbo) seat groups at other tables too: every bar must
+            // sit on some seated group's table (bars of groups still queueing show at the front door),
+            // and one must be at the moved table.
+            var groupTables = new List<Vector3>();
+            foreach (Entity g in AllWith<CAssignedTable>())
+            {
+                Entity t = EntityManager.GetComponentData<CAssignedTable>(g).Table;
+                if (HasComponent<CAtTable>(g) && EntityManager.Exists(t) && HasComponent<CPosition>(t))
+                {
+                    groupTables.Add(Pos(t));
+                }
+            }
+            bool atMoved = false;
+            int activeBars = 0;
             foreach (CustomerIndicatorView view in UnityEngine.Object.FindObjectsOfType<CustomerIndicatorView>())
             {
                 Vector3 vp = view.transform.position;
                 float off = new Vector2(vp.x - _dayTablePos.x, vp.z - _dayTablePos.z).magnitude;
-                Log($"indicator view at {vp} (offset from moved table {off:0.00}, active {view.gameObject.activeInHierarchy})");
+                float nearest = groupTables.Count == 0 ? float.MaxValue : groupTables.Min(t => new Vector2(vp.x - t.x, vp.z - t.z).magnitude);
+                Log($"indicator view at {vp} (offset from moved table {off:0.00}, from the nearest seated group's table {nearest:0.00}, active {view.gameObject.activeInHierarchy})");
+                Vector3 door = GetFrontDoor(get_external_tile: true);
+                if (new Vector2(vp.x - door.x, vp.z - door.z).magnitude < 2.5f)
+                {
+                    Log("  (a waiting group's bar at the front door; not a table bar)");
+                    continue;
+                }
                 if (view.gameObject.activeInHierarchy)
                 {
-                    Check(off < 1.5f, $"on-screen patience bar is drawn at the moved table (offset {off:0.00})");
+                    activeBars++;
+                    atMoved |= off < 1.5f;
+                    Check(Mathf.Min(off, nearest) < 1.5f, $"on-screen patience bar is drawn at a seated group's table (offset {Mathf.Min(off, nearest):0.00})");
                 }
+            }
+            if (activeBars > 0)
+            {
+                Check(atMoved, "a patience bar is drawn at the moved table");
             }
             if (checkedBars == 0)
             {

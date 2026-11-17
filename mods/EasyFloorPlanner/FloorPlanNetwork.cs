@@ -20,9 +20,9 @@ namespace EasyFloorPlanner
     /// </summary>
     internal static class FloorPlanSerializer
     {
-        private const int FormatVersion = 2;
-        private const int ViewFields = 16;
-        private const int ResponseFields = 5;
+        private const int FormatVersion = 3;
+        private const int ViewFields = 18;
+        private const int ResponseFields = 6;
         private const int MaxTiles = 16384;
         private const int MaxFeatures = 4096;
         private const int MaxStatusLength = 512;
@@ -53,6 +53,8 @@ namespace EasyFloorPlanner
             WriteLayout(ref w, d.Preview);
             w.Write(d.PreviewHash);
             WriteCursor(ref w, d.Cursor);
+            WriteArea(ref w, d.CameraArea);
+            WriteArea(ref w, d.PreviewArea);
         }
 
         public static FloorPlanViewData ReadView(ref MessagePackReader r)
@@ -89,6 +91,8 @@ namespace EasyFloorPlanner
             d.Preview = ReadLayout(ref r);
             d.PreviewHash = r.ReadInt32();
             d.Cursor = ReadCursor(ref r);
+            d.CameraArea = ReadArea(ref r);
+            d.PreviewArea = ReadArea(ref r);
             return d;
         }
 
@@ -100,6 +104,7 @@ namespace EasyFloorPlanner
             w.Write((byte)d.Action);
             WriteLayout(ref w, d.Draft);
             WriteCursor(ref w, d.Cursor);
+            WriteArea(ref w, d.CameraArea);
         }
 
         public static FloorPlanResponse ReadResponse(ref MessagePackReader r)
@@ -116,7 +121,34 @@ namespace EasyFloorPlanner
             d.Action = (FloorPlanAction)r.ReadByte();
             d.Draft = ReadLayout(ref r);
             d.Cursor = ReadCursor(ref r);
+            d.CameraArea = ReadArea(ref r);
             return d;
+        }
+
+        /// <summary>A camera area as [custom, min x, min y, max x, max y].</summary>
+        private static void WriteArea(ref MessagePackWriter w, FloorPlanCameraArea a)
+        {
+            w.WriteArrayHeader(5);
+            w.Write(a.Custom);
+            w.Write(a.MinX);
+            w.Write(a.MinY);
+            w.Write(a.MaxX);
+            w.Write(a.MaxY);
+        }
+
+        private static FloorPlanCameraArea ReadArea(ref MessagePackReader r)
+        {
+            if (r.ReadArrayHeader() != 5)
+            {
+                throw new MessagePackSerializationException($"{ModMain.Name}: bad camera area");
+            }
+            FloorPlanCameraArea a = default;
+            a.Custom = r.ReadBoolean();
+            a.MinX = r.ReadInt32();
+            a.MinY = r.ReadInt32();
+            a.MaxX = r.ReadInt32();
+            a.MaxY = r.ReadInt32();
+            return a;
         }
 
         /// <summary>A cursor as [x, y, facing x, facing y, mode, brush label].</summary>

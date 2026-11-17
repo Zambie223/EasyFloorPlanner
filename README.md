@@ -39,6 +39,15 @@ Every wall you've changed shows a hologram of its new state, drawn like a floor 
 
 Removing a door is always allowed while drafting. If that cuts a room off, the room turns orange and Apply waits until there's a way in again (or until you remove the room).
 
+### Camera area
+
+A big or oddly shaped restaurant (say, a long wing of automation you don't need to watch) makes the game zoom out to fit everything. The third mode, **Camera area**, lets you choose what the day camera frames instead. Drag a box over the part you want to see; right click (Grab on a controller) goes back to the whole restaurant. The area is outlined in light blue, and applying it on its own doesn't rebuild anything.
+
+- The area applies during the day. At night the game still shows the whole restaurant, so you can plan.
+- It applies to every player, and it's saved with the run.
+- It stays put when you resize the restaurant later. (The whole-restaurant setting follows every resize.)
+- Players who walk outside the area are still kept on screen, as in the base game.
+
 ### Controls
 
 | | Keyboard and mouse | Controller |
@@ -49,12 +58,36 @@ Removing a door is always allowed while drafting. If that cuts a room off, the r
 | Paint a filled box | Shift + left drag (Esc while dragging cancels it) | |
 | Pick the room (or wall type) under the cursor | Right click | Grab |
 | Change brush (room, or wall / hatch / door) | Q / E or mouse wheel | Secondary 1 |
-| Floor ↔ wall mode | Tab | Secondary 2 |
+| Draw the camera area (camera area mode) | Left drag | Hold Interact and move the view |
+| Floor → walls → camera area | Tab | Secondary 2 |
+| Zoom | Ctrl + mouse wheel | Hold RB + right stick up/down |
 | Undo | Ctrl+Z | Stop moving |
 | Apply | Enter | Menu select |
 | Cancel | Esc | Back |
 
 Your chef stands still while the editor is open (or while you're watching), and the movement controls move the view instead, so you can build beyond what's on screen. The view also turns to look straight down, so walls don't hide the floor behind them. It goes back to normal when you close the editor. Other players keep playing.
+
+## Camera while playing
+
+The mod also helps with the view during normal play:
+
+- **Room for the player cards:** the restaurant is framed a little higher, so the player cards at the bottom of the screen don't cover the front row.
+- **Your own zoom and pan:** these only change your screen. In local co-op everyone shares one screen, so they change it for everyone there.
+
+| | Keyboard and mouse | Controller |
+|---|---|---|
+| Zoom in / out | Mouse wheel | Hold RB + right stick up/down |
+| Pan | Hold the middle mouse button and drag | Right stick |
+| Reset the view | Middle click | Click the right stick |
+| Follow my chef on / off | F | Hold RB + click the right stick |
+
+At normal zoom you can pan a little (enough to see past the edges); zoom in to pan further.
+
+**Follow** keeps your chef (or all of this machine's chefs, in local co-op) away from the screen edges while you're zoomed in. It's off by default, and the setting is remembered. Turn it off when you want the view to stay where you put it.
+
+The controls are ignored while a menu or the pause screen is open. Leaving the restaurant resets the view.
+
+You don't need to remember any of this: the pause menu has a **Camera Controls** button. It opens a panel like the Recipes one, starting on the page for your controller, and shows whether follow is on.
 
 ## Rules
 
@@ -79,7 +112,7 @@ Your chef stands still while the editor is open (or while you're watching), and 
 
 ## Saves
 
-The edited layout is saved by the game itself, the same way the original layout is. The mod adds nothing of its own to save files, so a run edited with the mod still loads without it, and the layout stays as you left it.
+The edited layout is saved by the game itself, the same way the original layout is. So is the camera area: it's kept in the game's own camera markers. The mod adds nothing of its own to save files, so a run edited with the mod still loads without it, and the layout stays as you left it.
 
 However, the mod also keeps very large restaurants working: it extends the area customers can walk in, and the point the game uses to check that chairs are reachable. Without the mod, a restaurant that was grown beyond the base game's usual size can have floor customers can't walk on, or chairs they never use. Small edits within the original footprint are unaffected.
 
@@ -89,7 +122,6 @@ However, the mod also keeps very large restaurants working: it extends the area 
 - Very large trees two tiles from new floor can still overhang its edge slightly.
 - The game's night lighting only covers tiles up to 16 from the middle of the map; the mod lights anything further out itself.
 - Rain and snow only fall within a fixed area around the original restaurant, so parts of the map built far out stay dry. (It never falls inside rooms.)
-- The fix for street settings such as Turbo (neighbouring buildings moving to fit a grown restaurant) hasn't been verified in-game yet.
 - Doors can only go between two indoor rooms (no side doors to the outside yet).
 - The editor's "reachable from the front door" check looks at rooms and doors, not furniture. A dining room whose only way in is through a kitchen full of counters passes the check, but customers can't get there. The game marks such chairs with a "?".
 - Every apply rebuilds the restaurant's walls and walking paths, which can cause a brief hitch on very large restaurants.
