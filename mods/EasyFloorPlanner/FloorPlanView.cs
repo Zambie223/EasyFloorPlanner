@@ -92,7 +92,12 @@ namespace EasyFloorPlanner
         private FloorPlanCameraArea CommittedArea;
         private FloorPlanCameraArea DraftArea;
         private FloorPlanCameraArea LastPreviewArea;
-        private HashSet<LayoutPosition> Blocked = new HashSet<LayoutPosition>();
+        /// <summary>What stands on each tile, from the host (see TileOccupants).</summary>
+        private Dictionary<LayoutPosition, OccupantFlags> Occupants = new Dictionary<LayoutPosition, OccupantFlags>();
+
+        /// <summary>Appliances on floor the draft removes, which the game will throw away at the start of the day.</summary>
+        private int BinnedCount;
+        private int OccupantsHash = int.MinValue;
         private HashSet<LayoutPosition> Unreachable = new HashSet<LayoutPosition>();
 
         private readonly List<Brush> Brushes = new List<Brush>();
@@ -205,7 +210,20 @@ namespace EasyFloorPlanner
                 return;
             }
 
-            Blocked = new HashSet<LayoutPosition>(data.Blocked ?? new List<LayoutPosition>());
+            if (data.OccupiedHash != OccupantsHash || data.Occupied == null)
+            {
+                OccupantsHash = data.OccupiedHash;
+                Occupants = new Dictionary<LayoutPosition, OccupantFlags>();
+                foreach (OccupiedTile o in data.Occupied ?? new List<OccupiedTile>())
+                {
+                    Occupants[o.Tile] = Occupants.TryGetValue(o.Tile, out OccupantFlags had) ? had | o.Flags : o.Flags;
+                }
+                if (Committed != null && Draft != null)
+                {
+                    BinnedCount = TileOccupants.CountBinned(Committed, Draft, Occupants);
+                    OverlayDirty = true;
+                }
+            }
             CommittedArea = data.CameraArea;
             if (data.Layout != null && data.LayoutHash != CommittedHash)
             {
@@ -693,6 +711,12 @@ namespace EasyFloorPlanner
 
         private void AfterDraftChanged()
         {
+            int binnedBefore = BinnedCount;
+            BinnedCount = TileOccupants.CountBinned(Committed, Draft, Occupants);
+            if (BinnedCount > binnedBefore)
+            {
+                ShowMessage(BinnedWarning);
+            }
             Unreachable = LayoutEdits.Unreachable(Draft);
             RebuildBrushes();
             OverlayDirty = true;
@@ -703,7 +727,7 @@ namespace EasyFloorPlanner
             Brush brush = Brushes[BrushIndex];
             LayoutBlueprint before = new LayoutBlueprint(Draft);
             Room room = brush.IsNew ? LayoutEdits.NewRoom(Draft, brush.NewType) : brush.Room;
-            string refused = LayoutEdits.PaintTile(Draft, CursorTile, room, p => Blocked.Contains(p));
+            string refused = LayoutEdits.PaintTile(Draft, CursorTile, room, Occupants);
             if (refused != null)
             {
                 if (explicitPress)
@@ -738,7 +762,7 @@ namespace EasyFloorPlanner
         /// Shift + drag: paints every tile of the box between two corners with the current brush,
         /// as one undo step. A tile can only be painted next to its room, so the box fills in waves
         /// outward from the room: each pass paints what it can, until a pass paints nothing. Tiles
-        /// still refused (an appliance in the way, a door tile, ...) are reported.
+        /// still refused (a special door, an appliance that can't go outdoors, ...) are reported.
         /// </summary>
         private void PaintBox(LayoutPosition a, LayoutPosition b)
         {
@@ -768,7 +792,7 @@ namespace EasyFloorPlanner
                 progress = false;
                 for (int i = remaining.Count - 1; i >= 0; i--)
                 {
-                    string refused = LayoutEdits.PaintTile(Draft, remaining[i], room, p => Blocked.Contains(p));
+                    string refused = LayoutEdits.PaintTile(Draft, remaining[i], room, Occupants);
                     if (refused == null)
                     {
                         remaining.RemoveAt(i);
@@ -818,7 +842,7 @@ namespace EasyFloorPlanner
         {
             var brush = EdgeBrushes[EdgeBrushIndex];
             LayoutBlueprint before = new LayoutBlueprint(Draft);
-            string refused = LayoutEdits.SetEdge(Draft, CursorTile, CursorTile + CursorFacing, brush.Type);
+            string refused = LayoutEdits.SetEdge(Draft, CursorTile, CursorTile + CursorFacing, brush.Type, Occupants);
             if (refused != null)
             {
                 if (explicitPress)
@@ -1313,6 +1337,11 @@ namespace EasyFloorPlanner
                 if (LayoutHelpers.IsInside(t.Value) && !(Draft.Tiles.TryGetValue(t.Key, out Room now) && LayoutHelpers.IsInside(now)))
                 {
                     Take(new Color(0.9f, 0.1f, 0.1f, 0.45f), new Vector2(t.Key.x, t.Key.y), new Vector2(0.94f, 0.94f));
+                    if (Occupants.TryGetValue(t.Key, out OccupantFlags f) && (f & OccupantFlags.Binned) != 0)
+                    {
+                        // An appliance that will be thrown away: a yellow square inside the red.
+                        Take(new Color(1f, 0.85f, 0.1f, 0.85f), new Vector2(t.Key.x, t.Key.y), new Vector2(0.45f, 0.45f));
+                    }
                 }
             }
 
@@ -1479,14 +1508,23 @@ namespace EasyFloorPlanner
                 return;
             }
             float pulse = 0.65f + 0.35f * Mathf.Sin(Time.unscaledTime * 6f);
-            bool blocked = Blocked.Contains(CursorTile);
+            bool blocked = false, binning = false;
+            if (!Spectating && CurrentMode == Mode.Tiles && Draft != null && Occupants.TryGetValue(CursorTile, out OccupantFlags here))
+            {
+                Brush b = Brushes[BrushIndex];
+                bool erases = !b.IsNew && b.Room.Type == RoomType.NoRoom;
+                bool indoorNow = TileOccupants.IsIndoor(Draft, CursorTile);
+                blocked = TileOccupants.Refusal(indoorNow, !erases, here) != null;
+                binning = !blocked && erases && indoorNow && (here & OccupantFlags.Binned) != 0;
+            }
             // A spectator sees the editor's cursor in the editor's player colour.
             // In wall mode the editor's cursor bar shows the wall brush's colour (wall, hatch, door).
             Color edgeColour = EdgeBrushes[EdgeBrushIndex].Colour;
             Color c = Spectating ? new Color(EditorColour.r, EditorColour.g, EditorColour.b, pulse)
                 : CurrentMode == Mode.Walls ? new Color(edgeColour.r, edgeColour.g, edgeColour.b, pulse)
                 : CurrentMode == Mode.Camera ? new Color(CameraColour.r, CameraColour.g, CameraColour.b, pulse)
-                : blocked ? new Color(1f, 0.25f, 0.2f, pulse) : new Color(1f, 1f, 1f, pulse);
+                : blocked ? new Color(1f, 0.25f, 0.2f, pulse)
+                : binning ? new Color(1f, 0.85f, 0.1f, pulse) : new Color(1f, 1f, 1f, pulse);
             var p = new Vector2(CursorTile.x, CursorTile.y);
             if (CurrentMode != Mode.Walls)
             {
@@ -1564,9 +1602,18 @@ namespace EasyFloorPlanner
             {
                 string summary = DraftSummary();
                 status = summary == null ? "No changes yet." : summary + " Enter/Select to apply.";
+                if (BinnedCount > 0)
+                {
+                    status += $"\n<color=#FFD820>{BinnedWarning}</color>";
+                }
             }
             HudStatus.text = status;
         }
+
+        /// <summary>The warning for appliances left on removed floor (vanilla bins anything outdoors at the start of the day).</summary>
+        private string BinnedWarning => BinnedCount == 1
+            ? "The appliance on removed floor (yellow) will be thrown away at the start of the day unless you move it back inside."
+            : $"{BinnedCount} appliances on removed floor (yellow) will be thrown away at the start of the day unless you move them back inside.";
 
         private static string ModeName(Mode m) => m == Mode.Tiles ? "Paint floor" : m == Mode.Walls ? "Walls, hatches & doors" : "Camera area";
 
@@ -1655,6 +1702,8 @@ namespace EasyFloorPlanner
         internal void TestSendRaw(FloorPlanAction action, LayoutBlueprint draft) => Enqueue(action, draft);
         internal LayoutBlueprint TestDraft => Draft;
         internal int TestUnreachableCount => Unreachable.Count;
+        internal int TestBinnedCount => BinnedCount;
+        internal IReadOnlyDictionary<LayoutPosition, OccupantFlags> TestOccupants => Occupants;
         internal string TestMessage => Message;
         internal int TestPooledMarks => PoolUsed;
         internal int TestHologramMarks => HoloUsed;

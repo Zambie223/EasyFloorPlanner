@@ -32,6 +32,16 @@ namespace EasyFloorPlanner
     ///
     /// While the floor plan editor is open (FloorPlanCamera), it owns panning; only zoom applies
     /// there, with its own level. Outside the restaurant (HQ, menus) vanilla's values are restored.
+    ///
+    /// Sharing input with other UIs (other mods included): the camera reads the mouse wheel,
+    /// middle button and right stick straight from Unity, which the game's input system doesn't
+    /// route. So it only acts on a device whose player isn't busy elsewhere: not locked, and not
+    /// claimed by another input consumer. For the latter, LastInLine is registered as the lowest
+    /// priority IInputConsumer (kept at the end of the queue every frame). The game offers each
+    /// player's input to consumers in order and stops at the first that takes it, so LastInLine
+    /// only hears from players nobody else claimed: any menu, popup or mod window that takes input
+    /// the standard way (for example Blueprint Shop's shop window) pauses the camera controls for
+    /// that player's devices.
     /// </summary>
     internal static class PlayCamera
     {
@@ -60,6 +70,9 @@ namespace EasyFloorPlanner
         public static bool Follow { get; private set; }
 
         private static float EditorZoom = 1f;
+
+        /// <summary>Whether the mouse and keyboard were free for the camera on the last frame input was read.</summary>
+        private static bool LastMouseFree;
         private static bool WasEditor;
 
         private static GameObject DriverObject;
@@ -71,6 +84,31 @@ namespace EasyFloorPlanner
 
         private static string Toast;
         private static float ToastUntil;
+
+        /// <summary>Frame each local player's input last reached the end of the consumer queue (nobody claimed it).</summary>
+        private static readonly Dictionary<int, int> Unclaimed = new Dictionary<int, int>();
+        private static readonly LastInLine Probe = new LastInLine();
+
+        /// <summary>A consumer that never takes input: it only notes which players' input got this far.</summary>
+        private sealed class LastInLine : IInputConsumer
+        {
+            public InputConsumerState TakeInput(int player_id, InputState state)
+            {
+                Unclaimed[player_id] = Time.frameCount;
+                return InputConsumerState.NotConsumed;
+            }
+        }
+
+        /// <summary>Keeps the probe last in the queue (other low-priority consumers insert themselves there too).</summary>
+        private static void KeepProbeLast()
+        {
+            List<IInputConsumer> consumers = LocalInputSourceConsumers.Consumers;
+            if (consumers.Count == 0 || consumers[0] != Probe)
+            {
+                LocalInputSourceConsumers.Remove(Probe);
+                LocalInputSourceConsumers.Register(Probe, is_low_priority: true);
+            }
+        }
 
         private static Vector2 MiddleDownAt;
         private static float MiddleDownTime;
@@ -135,6 +173,7 @@ namespace EasyFloorPlanner
                 WasEditor = editor;
                 EditorZoom = 1f; // each editor session starts at the editor's own framing
             }
+            KeepProbeLast();
             if (InputAllowed(editor))
             {
                 ReadInput(editor);
@@ -226,10 +265,7 @@ namespace EasyFloorPlanner
 
         // ================================================================= input
 
-        /// <summary>
-        /// No camera input while a menu, the pause screen or a popup has this machine's input. In
-        /// the editor its own lock is expected, so only the global lock counts there.
-        /// </summary>
+        /// <summary>No camera input while the game is unfocused or globally locked (pause menu).</summary>
         private static bool InputAllowed(bool editor)
         {
             if (!Application.isFocused)
@@ -237,43 +273,99 @@ namespace EasyFloorPlanner
                 return false;
             }
             BaseInputSource source = InputSourceIdentifier.DefaultInputSource;
-            if (source == null)
-            {
-                return true;
-            }
-            if (source.GlobalLock != null && source.GlobalLock.IsLocked)
-            {
-                return false;
-            }
-            return editor || !AnyLocalPlayerLocked(source);
+            return source == null || source.GlobalLock == null || !source.GlobalLock.IsLocked;
         }
 
         private static readonly FieldInfo PlayersField =
             typeof(BaseInputSource).GetField("Players", BindingFlags.Instance | BindingFlags.NonPublic);
 
-        private static bool AnyLocalPlayerLocked(BaseInputSource source)
+        /// <summary>
+        /// Whether the camera may act on <paramref name="device"/>: false while the local player
+        /// using it is locked, or their input was claimed by another consumer (a menu, a popup,
+        /// another mod's window) in the last couple of frames. A device no local player uses is
+        /// free. If the game changes and players can't be read, devices are treated as free.
+        /// </summary>
+        private static bool DeviceFree(InputDevice device)
         {
+            if (device == null)
+            {
+                return false;
+            }
+            Dictionary<int, PlayerData> players;
             try
             {
-                if (PlayersField?.GetValue(source) is Dictionary<int, PlayerData> players)
-                {
-                    return players.Values.Any(p => p?.Lock != null && p.Lock.IsLocked);
-                }
+                players = PlayersField?.GetValue(InputSourceIdentifier.DefaultInputSource) as Dictionary<int, PlayerData>;
             }
             catch (Exception)
             {
-                // If the game changes, camera input just isn't gated by menus.
+                return true;
+            }
+            if (players == null)
+            {
+                return true;
+            }
+            foreach (KeyValuePair<int, PlayerData> kv in players)
+            {
+                if (!Uses(kv.Value, device))
+                {
+                    continue;
+                }
+                if (kv.Value.Lock != null && kv.Value.Lock.IsLocked)
+                {
+                    return false;
+                }
+                if (!Unclaimed.TryGetValue(kv.Key, out int frame) || Time.frameCount - frame > 2)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static bool Uses(PlayerData player, InputDevice device)
+        {
+            UserInputData data = player?.InputData;
+            if (data == null)
+            {
+                return false;
+            }
+            if (data.Device == device)
+            {
+                return true;
+            }
+            var devices = data.Map?.devices;
+            if (!devices.HasValue)
+            {
+                return false;
+            }
+            foreach (InputDevice d in devices.Value)
+            {
+                if (d == device)
+                {
+                    return true;
+                }
             }
             return false;
         }
+
+        /// <summary>The mouse counts as the keyboard player's when only the keyboard is in their device list.</summary>
+        private static bool MouseFree() => DeviceFree(Mouse.current) && DeviceFree(Keyboard.current);
 
         private static void ReadInput(bool editor)
         {
             float dt = Time.unscaledDeltaTime;
             float zoom = editor ? EditorZoom : Zoom;
             Vector2 pan = Pan;
-            Keyboard kb = Keyboard.current;
-            Mouse mouse = Mouse.current;
+            // In the editor, its own player's input is claimed by the editor itself (ours), so only
+            // the global lock (checked by the caller) applies there.
+            bool mouseOk = editor || MouseFree();
+            LastMouseFree = mouseOk;
+            Keyboard kb = mouseOk ? Keyboard.current : null;
+            Mouse mouse = mouseOk ? Mouse.current : null;
+            if (!mouseOk)
+            {
+                MiddleDragged = true; // a drag that was under way doesn't end in a reset click
+            }
 
             if (mouse != null)
             {
@@ -320,6 +412,10 @@ namespace EasyFloorPlanner
 
             foreach (Gamepad pad in Gamepad.all)
             {
+                if (!editor && !DeviceFree(pad))
+                {
+                    continue;
+                }
                 Vector2 stick = pad.rightStick.ReadValue();
                 bool rb = pad.rightShoulder.isPressed;
                 if (stick.magnitude < 0.2f)
@@ -523,6 +619,9 @@ namespace EasyFloorPlanner
         }
 
         internal static void TestSetFollowSilently(bool on) => Follow = on;
+
+        internal static bool TestMouseFree => MouseFree();
+        internal static bool TestProbeLast => LocalInputSourceConsumers.Consumers.Count > 0 && LocalInputSourceConsumers.Consumers[0] == Probe;
 
         internal static int TestLocalChefCount => LocalChefs().Count;
 #endif

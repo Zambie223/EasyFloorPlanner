@@ -108,9 +108,9 @@ namespace EasyFloorPlanner
         public LayoutBlueprint Layout;
         public int LayoutHash;
 
-        /// <summary>Tiles a layout edit can't change because an appliance stands there (editor only).</summary>
-        public List<LayoutPosition> Blocked;
-        public int BlockedHash;
+        /// <summary>Tiles with appliances an edit has to respect, and how (editor only; see TileOccupants).</summary>
+        public List<OccupiedTile> Occupied;
+        public int OccupiedHash;
 
         /// <summary>Highest Apply/Cancel Sequence the host has processed for this session (editor only).</summary>
         public int AckSequence;
@@ -138,7 +138,7 @@ namespace EasyFloorPlanner
                 || Spectating != check.Spectating
                 || EditorPlayerID != check.EditorPlayerID
                 || LayoutHash != check.LayoutHash
-                || BlockedHash != check.BlockedHash
+                || OccupiedHash != check.OccupiedHash
                 || AckSequence != check.AckSequence
                 || LastSucceeded != check.LastSucceeded
                 || Status != check.Status

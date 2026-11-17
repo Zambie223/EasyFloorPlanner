@@ -10,7 +10,9 @@ using UnityEngine;
 namespace EasyFloorPlanner
 {
     /// <summary>
-    /// The one occupancy rule every layout edit uses. A tile is occupied if either is true:
+    /// Whether anything stands on a tile, for placing the Floor Plan terminal, the debug hotkeys'
+    /// direct edits and the self-test. (The editor's rules for appliances on edited floor are in
+    /// TileOccupants.) A tile is occupied if either is true:
     /// - TileManager has an occupant there in any layer (Default, Wall, Floor, Ceiling), or
     /// - any appliance that isn't being carried stands on it.
     ///

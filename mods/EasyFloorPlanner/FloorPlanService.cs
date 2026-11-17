@@ -463,8 +463,8 @@ namespace EasyFloorPlanner
             bool layoutChanged = FloorPlanSerializer.Hash(live) != FloorPlanSerializer.Hash(draft);
             if (layoutChanged)
             {
-                OccupancySnapshot occupancy = OccupancySnapshot.Take(EntityManager, TileManager);
-                string error = LayoutEdits.ValidateDraft(live, draft, occupancy.BlocksEdit);
+                Dictionary<LayoutPosition, OccupantFlags> occupants = TileOccupants.Take(EntityManager);
+                string error = LayoutEdits.ValidateDraft(live, draft, occupants);
                 if (error != null)
                 {
                     ModMain.Log($"Refused a floor plan draft: {error}");
@@ -474,8 +474,10 @@ namespace EasyFloorPlanner
                 {
                     return "layout editing is unavailable (see the log)";
                 }
+                int binned = TileOccupants.CountBinned(live, draft, occupants);
                 LayoutCommit.Result r = LayoutCommit.Commit(EntityManager, TileManager, layout, draft);
-                ModMain.Log($"Applied a floor plan draft: {draft.Tiles.Count} tiles, {draft.Features.Count} features; scenery moved {r.SceneryMoved}, removed {r.SceneryRemoved}.");
+                ModMain.Log($"Applied a floor plan draft: {draft.Tiles.Count} tiles, {draft.Features.Count} features; scenery moved {r.SceneryMoved}, removed {r.SceneryRemoved}; "
+                            + $"appliances left outdoors {binned}, wall-mounted turned {r.WallMountedTurned}, table groups re-formed {r.TableGroupsReformed}, chairs cleared {r.ChairsCleared}.");
             }
 
             // After the commit, which may have resized the restaurant (and moved a whole-restaurant framing with it).
@@ -498,32 +500,9 @@ namespace EasyFloorPlanner
                 : FloorPlanCameraArea.Whole;
         }
 
-        /// <summary>Tiles an edit can't change, near the building (sent to the editor for live feedback).</summary>
-        public List<LayoutPosition> BlockedTiles(LayoutBlueprint layout)
-        {
-            OccupancySnapshot occupancy = OccupancySnapshot.Take(EntityManager, TileManager);
-            var result = new List<LayoutPosition>();
-            int reach = LayoutEdits.MaxExtent;
-            EntityQuery q = EntityManager.CreateEntityQuery(new EntityQueryDesc
-            {
-                All = new[] { ComponentType.ReadOnly<CAppliance>(), ComponentType.ReadOnly<CPosition>() },
-                None = new[] { ComponentType.ReadOnly<CHeldBy>(), ComponentType.ReadOnly<CDoesNotOccupy>() },
-            });
-            using (NativeArray<CPosition> positions = q.ToComponentDataArray<CPosition>(Allocator.Temp))
-            {
-                var seen = new HashSet<LayoutPosition>();
-                foreach (CPosition p in positions)
-                {
-                    LayoutPosition t = p.Position.Rounded();
-                    if (Mathf.Abs(t.x) <= reach && Mathf.Abs(t.y) <= reach && seen.Add(t) && occupancy.BlocksEdit(t))
-                    {
-                        result.Add(t);
-                    }
-                }
-            }
-            q.Dispose();
-            return result;
-        }
+        /// <summary>What stands on each tile, as far as edits care (sent to the editor for live feedback).</summary>
+        public List<OccupiedTile> OccupiedTiles() =>
+            TileOccupants.Take(EntityManager).Select(o => new OccupiedTile { Tile = o.Key, Flags = o.Value }).ToList();
 
 #if DEBUG
         // Self-test hooks (Debug builds only).
@@ -567,7 +546,7 @@ namespace EasyFloorPlanner
     }
 
     /// <summary>
-    /// Host: pushes the committed layout and blocked tiles to the open editor, and the editor's
+    /// Host: pushes the committed layout and what stands on each tile to the open editor, and the editor's
     /// preview to spectators, and applies their responses. Responses arrive through the game's
     /// PerformCommandRouter, which finds this system by its response type; which entity's view
     /// a response arrived on decides whether it's treated as the editor's or a spectator's.
@@ -630,13 +609,13 @@ namespace EasyFloorPlanner
             LayoutBlueprint layout = LayoutWriter.Read(EntityManager, GetSingletonEntity<SLayout>());
             int layoutHash = FloorPlanSerializer.Hash(layout);
             FloorPlanCameraArea cameraArea = Service.CurrentCameraArea();
-            List<LayoutPosition> blocked = Service.BlockedTiles(layout);
-            int blockedHash = 17;
+            List<OccupiedTile> occupied = Service.OccupiedTiles();
+            int occupiedHash = 17;
             unchecked
             {
-                foreach (LayoutPosition b in blocked)
+                foreach (OccupiedTile o in occupied)
                 {
-                    blockedHash += (b.x * 73856093) ^ (b.y * 19349663);
+                    occupiedHash += (o.Tile.x * 73856093) ^ (o.Tile.y * 19349663) ^ ((int)o.Flags * 83492791);
                 }
             }
 
@@ -669,8 +648,8 @@ namespace EasyFloorPlanner
                     EditorPlayerID = s.PlayerID,
                     Layout = layout,
                     LayoutHash = layoutHash,
-                    Blocked = blocked,
-                    BlockedHash = blockedHash,
+                    Occupied = occupied,
+                    OccupiedHash = occupiedHash,
                     AckSequence = status.AckSequence,
                     LastSucceeded = status.LastSucceeded,
                     Status = status.Message ?? "",
@@ -695,7 +674,7 @@ namespace EasyFloorPlanner
                     EditorPlayerID = s.PlayerID,
                     Layout = layout,
                     LayoutHash = layoutHash,
-                    Blocked = new List<LayoutPosition>(), // spectators don't paint
+                    Occupied = new List<OccupiedTile>(), // spectators don't paint
                     Status = "",
                     SpectatorCount = watching.Count(o => o.spectator.Session == w.Session),
                     Preview = preview?.Draft,

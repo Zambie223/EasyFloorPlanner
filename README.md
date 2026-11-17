@@ -85,13 +85,16 @@ At normal zoom you can pan a little (enough to see past the edges); zoom in to p
 
 **Follow** keeps your chef (or all of this machine's chefs, in local co-op) away from the screen edges while you're zoomed in. It's off by default, and the setting is remembered. Turn it off when you want the view to stay where you put it.
 
-The controls are ignored while a menu or the pause screen is open. Leaving the restaurant resets the view.
+The controls are ignored while a menu, a popup or the pause screen is open, and while another mod's window (such as a shop) has your input, so scrolling in that window doesn't zoom the camera behind it. In local co-op only the busy player's devices are ignored. Leaving the restaurant resets the view.
 
 You don't need to remember any of this: the pause menu has a **Camera Controls** button. It opens a panel like the Recipes one, starting on the page for your controller, and shows whether follow is on.
 
 ## Rules
 
-- **Appliances block edits.** A tile with an appliance on it can't change; move the appliance first. The tile flashes red.
+- **Appliances can stay where they are.** You can repaint the floor under an appliance into another room, or move walls around it, and it stays put. Table groups and chairs re-form to match the new walls.
+  - **Removing the floor under an appliance** is allowed, but the game throws away anything left outdoors at the start of the day. The editor marks these appliances in yellow and warns you; move them back inside before the day starts (or paint the floor back under them).
+  - **Some appliances can't go outdoors** (ones that can't be moved or thrown away): the floor under them can't be removed. Likewise, floor can't be built over things that can't be moved or belong outdoors. The tile flashes red.
+  - **Wall-mounted appliances** need a solid wall beside them: an edit that would take away their last wall (or put a door or hatch in it) is refused. If their wall moves, they turn to face one that's left.
 - **Outdoor scenery never blocks.** Trees, rocks, bushes and flowers on new floor, or right beside it (so tree tops don't hang over it), are removed when you apply.
 - **Street settings (such as Turbo):** the neighbouring buildings, the street and the front border move to fit the new size, so new floor never ends up inside a neighbouring building.
 - **Every floor tile must be reachable from the front door,** through rooms and doors (hatches don't count).

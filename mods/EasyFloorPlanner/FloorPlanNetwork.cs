@@ -20,7 +20,7 @@ namespace EasyFloorPlanner
     /// </summary>
     internal static class FloorPlanSerializer
     {
-        private const int FormatVersion = 3;
+        private const int FormatVersion = 4;
         private const int ViewFields = 18;
         private const int ResponseFields = 6;
         private const int MaxTiles = 16384;
@@ -38,14 +38,15 @@ namespace EasyFloorPlanner
             w.Write(d.EditorPlayerID);
             WriteLayout(ref w, d.Layout);
             w.Write(d.LayoutHash);
-            int blocked = d.Blocked?.Count ?? 0;
-            w.WriteArrayHeader(blocked * 2);
-            for (int i = 0; i < blocked; i++)
+            int occupied = d.Occupied?.Count ?? 0;
+            w.WriteArrayHeader(occupied * 3);
+            for (int i = 0; i < occupied; i++)
             {
-                w.Write(d.Blocked[i].x);
-                w.Write(d.Blocked[i].y);
+                w.Write(d.Occupied[i].Tile.x);
+                w.Write(d.Occupied[i].Tile.y);
+                w.Write((byte)d.Occupied[i].Flags);
             }
-            w.Write(d.BlockedHash);
+            w.Write(d.OccupiedHash);
             w.Write(d.AckSequence);
             w.Write(d.LastSucceeded);
             w.Write(d.Status ?? "");
@@ -73,17 +74,21 @@ namespace EasyFloorPlanner
             d.EditorPlayerID = r.ReadInt32();
             d.Layout = ReadLayout(ref r);
             d.LayoutHash = r.ReadInt32();
-            int blockedValues = r.ReadArrayHeader();
-            if (blockedValues > MaxTiles * 2 || blockedValues % 2 != 0)
+            int occupiedValues = r.ReadArrayHeader();
+            if (occupiedValues > MaxTiles * 3 || occupiedValues % 3 != 0)
             {
-                throw new MessagePackSerializationException($"{ModMain.Name}: bad blocked-tile list ({blockedValues})");
+                throw new MessagePackSerializationException($"{ModMain.Name}: bad occupied-tile list ({occupiedValues})");
             }
-            d.Blocked = new List<LayoutPosition>(blockedValues / 2);
-            for (int i = 0; i < blockedValues / 2; i++)
+            d.Occupied = new List<OccupiedTile>(occupiedValues / 3);
+            for (int i = 0; i < occupiedValues / 3; i++)
             {
-                d.Blocked.Add(new LayoutPosition(r.ReadInt32(), r.ReadInt32()));
+                d.Occupied.Add(new OccupiedTile
+                {
+                    Tile = new LayoutPosition(r.ReadInt32(), r.ReadInt32()),
+                    Flags = (OccupantFlags)r.ReadByte(),
+                });
             }
-            d.BlockedHash = r.ReadInt32();
+            d.OccupiedHash = r.ReadInt32();
             d.AckSequence = r.ReadInt32();
             d.LastSucceeded = r.ReadBoolean();
             d.Status = Cap(r.ReadString(), MaxStatusLength);

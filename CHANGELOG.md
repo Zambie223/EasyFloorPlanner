@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Appliances no longer block floor edits.** You can repaint the floor under an appliance into another room, or move walls around it, and it stays where it is.
+  - **Removing the floor under an appliance** is allowed with a warning: the game throws away appliances left outdoors at the start of the day, so the editor marks them in yellow. Painting the floor back under them saves them.
+  - **Still refused:** removing the floor under appliances that can't be moved or thrown away, and building floor over things that can't be moved or belong outdoors.
+  - **Wall-mounted appliances** keep at least one solid wall: an edit that takes away the last one (or puts a door or hatch in it) is refused. If their wall moves, they turn to face one that's left.
+  - **Tables and chairs** follow the new walls: tables split by a new wall stop being one group, tables brought together in one room join up, and chairs left across a wall from their table are cleared (the game puts new ones down).
+- **Compatibility:** the editor's network messages changed again, so every player needs the same version.
+- **Camera controls and other mods' windows:** while a menu, popup or another mod's window has your input (for example Blueprint Shop's shop window), the camera ignores your mouse wheel, middle button and controller. Scrolling in such a window no longer zooms the camera behind it. In local co-op only the busy player's devices are ignored.
+
 ## 0.2.0 (2026-11-17)
 
 - **Camera area:** a third editor mode. Drag a box to choose what the day camera frames, for example to leave out a wing you don't need to watch. It's saved with the run, stays put when you resize the restaurant, and can be reset to the whole restaurant.

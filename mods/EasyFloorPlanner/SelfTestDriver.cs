@@ -244,7 +244,10 @@ namespace EasyFloorPlanner
                 StepShrinkFarWest,
                 StepAreaKeptAfterResize,
                 StepAreaReopen, StepAreaVerifyReopened, StepAreaReset, StepAreaVerifyReset,
+                StepOccupiedSetup, StepOccupiedGrouped, StepOccupiedEdit, StepOccupiedVerify, StepOccupiedRestore, StepOccupiedVerifyRestored,
+                StepWallMountedSetup, StepWallMountedSpawned, StepWallMountedEdit, StepWallMountedVerify, StepWallMountedRestore, StepWallMountedVerifyRestored,
                 StepPlayCamera, StepPlayCameraZoom, StepPlayCameraPan, StepPlayCameraFollow, StepPlayCameraReset,
+                StepCameraOtherUiOpen, StepCameraOtherUiClosed,
                 StepCameraControlsPause, StepCameraControlsOpen, StepCameraControlsPages,
                 StepPrepareDayLayout, StepVerifyDayLayout,
                 StepSaveToMemory, StepVerifySaved,
@@ -1140,7 +1143,7 @@ namespace EasyFloorPlanner
                 {
                     LayoutPosition a = s + d, b = a + d, side = a + perp, side2 = side + d;
                     var block = new[] { a, b, side, side2 };
-                    if (block.Any(p => BlocksEdit(p) || live.Tiles.ContainsKey(p)) || LayoutEdits.PaintTile(new LayoutBlueprint(live), a, live[s], BlocksEdit) != null)
+                    if (block.Any(p => BlocksEdit(p) || live.Tiles.ContainsKey(p)) || LayoutEdits.PaintTile(new LayoutBlueprint(live), a, live[s], TileOccupants.Take(EntityManager)) != null)
                     {
                         continue;
                     }
@@ -1182,13 +1185,20 @@ namespace EasyFloorPlanner
             view.TestApply();
             Check(!view.TestAwaiting && view.TestMessage.Contains("reached"), $"apply is refused locally while floor is unreachable ({view.TestMessage})");
 
-            // 3. Blocked tile refusal (any solid appliance indoors).
-            LayoutPosition? blocked = live.Tiles.Where(t => LayoutHelpers.IsInside(t.Value) && BlocksEdit(t.Key)).Select(t => (LayoutPosition?)t.Key).FirstOrDefault();
-            if (blocked.HasValue)
+            // 3. Appliances no longer block painting (see StepOccupied*), except ones that can't be
+            //    moved or can't go outdoors, when their floor would switch between in and out.
+            LayoutPosition? stuck = view.TestOccupants.Where(o => (o.Value & (OccupantFlags.Fixed | OccupantFlags.KeepIndoors)) != 0 && TileOccupants.IsIndoor(live, o.Key))
+                .Select(o => (LayoutPosition?)o.Key).FirstOrDefault();
+            if (stuck.HasValue)
             {
                 view.TestSelectBrush("Outdoors (remove floor)");
-                view.TestPaint(blocked.Value);
-                Check(view.TestMessage.Contains("appliance"), $"painting over an appliance is refused ({view.TestMessage})");
+                view.TestPaint(stuck.Value);
+                Check(view.TestMessage.Contains("appliance") && TileOccupants.IsIndoor(view.TestDraft, stuck.Value),
+                    $"removing the floor under an appliance that can't go outdoors is refused ({view.TestMessage})");
+            }
+            else
+            {
+                Log("INFO no indoor appliance that can't be moved or sold; that refusal isn't exercised.");
             }
 
             // 4. A door between the new room and the grown dining tile, via a hatch (wall brushes).
@@ -1576,6 +1586,549 @@ namespace EasyFloorPlanner
             Check(MarkersFrame(FloorPlanCameraArea.Whole, out string markers), $"the day camera frames the whole restaurant again ({markers})");
         }
 
+        // ---- appliances on edited floor (user decision 2026-11-17) ----
+        // Repainting a tile under an appliance is allowed; erasing it warns that the game will
+        // bin the appliance at the start of the day; a wall-mounted appliance keeps its last wall.
+        // Two tables are joined side by side, then a new wall is drafted between them: the editor
+        // must allow it, and after Apply they must no longer be one table group, and no chair may
+        // stay across a wall from its table. Then everything is painted back.
+
+        private Entity _occT1, _occT2, _occE;
+        private LayoutPosition _occA, _occB, _occETile;
+        private int _occR1, _occR2, _occERoom, _occLayoutHash;
+        private bool _occReady;
+
+        private void StepOccupiedSetup()
+        {
+            // The wall-mounted appliances in this game version (their flag lives in the game data).
+            var wallMounted = KitchenData.GameData.Main.Get<KitchenData.Appliance>()
+                .Where(a => a.Properties != null && a.Properties.Any(p => p is CMustHaveWall)).Select(a => a.Name).ToList();
+            Log($"INFO wall-mounted appliances (CMustHaveWall): {wallMounted.Count}{(wallMounted.Count > 0 ? ": " + string.Join(", ", wallMounted) : "")}");
+
+            // Rule check on a small made-up layout: a 3 x 3 room with a second room above its top
+            // middle tile, so a wall-mounted appliance there has walls only up (room 2) and... none
+            // other than that one, since its other sides are the same room or the room's own edge.
+            var r1 = new Room(RoomType.Dining);
+            var r2 = new Room(RoomType.Kitchen);
+            var bp = new LayoutBlueprint();
+            for (int x = -1; x <= 3; x++)
+            {
+                for (int y = -1; y <= 3; y++)
+                {
+                    bp.Tiles[new LayoutPosition(x, y)] = r1; // 5 x 5, so the tile below isn't on an edge
+                }
+            }
+            var top = new LayoutPosition(1, 3);
+            var above = new LayoutPosition(1, 4);
+            bp.Tiles[above] = r2;
+            // (1, 3) is on the 5 x 5 room's top row: up is room 2 (a wall), left/right/down are room 1.
+            var occ = new Dictionary<LayoutPosition, OccupantFlags> { [top] = OccupantFlags.WallMounted | OccupantFlags.Binned };
+            Check(TileOccupants.HasSolidWall(bp, top) && TileOccupants.Sides.Count(s => TileOccupants.IsSolidWall(bp, top, s.D)) == 1,
+                "(setup) the made-up wall-mounted spot has exactly one wall");
+            string merged = LayoutEdits.PaintTile(bp, above, r1, occ);
+            Check(merged != null && merged.Contains("wall-mounted") && bp[above].ID == r2.ID,
+                $"painting away the only wall of a wall-mounted appliance is refused, and the draft is left as it was ({merged ?? "allowed"})");
+            string door = LayoutEdits.SetEdge(bp, top, above, FeatureType.Door, occ);
+            Check(door != null && !bp.Features.Any(), $"a door in the only wall of a wall-mounted appliance is refused ({door ?? "allowed"})");
+            // Give it a second wall (room 2 grows round to its right), then the first wall may go.
+            var two = new LayoutBlueprint(bp);
+            string grow = LayoutEdits.PaintTile(two, new LayoutPosition(2, 4), r2, occ) ?? LayoutEdits.PaintTile(two, new LayoutPosition(2, 3), r2, occ);
+            string oneOfTwo = grow ?? LayoutEdits.PaintTile(two, above, r1, occ);
+            Check(oneOfTwo == null && two[above].ID == r1.ID && TileOccupants.HasSolidWall(two, top),
+                $"a wall-mounted appliance with another wall doesn't block removing one ({oneOfTwo ?? "allowed"})");
+            Check(TileOccupants.Refusal(true, false, OccupantFlags.Fixed) != null && TileOccupants.Refusal(true, false, OccupantFlags.KeepIndoors) != null
+                  && TileOccupants.Refusal(true, false, OccupantFlags.Binned) == null && TileOccupants.Refusal(true, true, OccupantFlags.Fixed) == null,
+                "rules: unmovable or can't-go-outdoors appliances keep their floor; other appliances may lose it; any may change rooms");
+
+            // In the restaurant: two tables of the same kind, side by side in one room, where the
+            // second tile borders another room it can join without cutting anything off.
+            LayoutBlueprint live = ReadLayout();
+            Dictionary<LayoutPosition, OccupantFlags> occupants = TileOccupants.Take(EntityManager);
+            var tables = AllWith<CApplianceTable>().Where(t => !HasComponent<CHeldBy>(t) && HasComponent<CAppliance>(t)
+                                                               && !EntityManager.GetComponentData<CApplianceTable>(t).IsIndividualTable).ToList();
+            (Entity t, Entity u) pair = default;
+            foreach (Entity t in tables)
+            {
+                Entity u = tables.FirstOrDefault(x => x != t
+                    && EntityManager.GetComponentData<CAppliance>(x).ID == EntityManager.GetComponentData<CAppliance>(t).ID
+                    && EntityManager.GetComponentData<CApplianceTable>(x).IsWaitingTable == EntityManager.GetComponentData<CApplianceTable>(t).IsWaitingTable);
+                if (u != default)
+                {
+                    pair = (t, u);
+                    break;
+                }
+            }
+            if (pair.t == default)
+            {
+                Log($"INFO no two tables of the same kind ({tables.Count} tables); the table part of this test is skipped.");
+            }
+            bool Free(LayoutPosition p) => !occupants.ContainsKey(p) && TileManager.GetOccupant((Vector3)p) == default(Entity)
+                                           && !live.GetFeatures(p).Any();
+            bool Indoor(LayoutPosition p, out Room r) => live.Tiles.TryGetValue(p, out r) && LayoutHelpers.IsInside(r) && r.Type != RoomType.Garden;
+            foreach (KeyValuePair<LayoutPosition, Room> t in live.Tiles.OrderBy(t => Math.Abs(t.Key.x) + Math.Abs(t.Key.y)))
+            {
+                if (pair.t == default || _occR1 != 0)
+                {
+                    break;
+                }
+                if (!Indoor(t.Key, out Room ra) || !Free(t.Key))
+                {
+                    continue;
+                }
+                foreach (var s in TileOccupants.Sides)
+                {
+                    LayoutPosition b = t.Key + s.D;
+                    if (!Indoor(b, out Room rb) || rb.ID != ra.ID || !Free(b))
+                    {
+                        continue;
+                    }
+                    foreach (var s2 in TileOccupants.Sides)
+                    {
+                        LayoutPosition c = b + s2.D;
+                        if (c == t.Key || !Indoor(c, out Room rc) || rc.ID == ra.ID)
+                        {
+                            continue;
+                        }
+                        var trial = new LayoutBlueprint(live);
+                        if (LayoutEdits.PaintTile(trial, b, rc, occupants) != null || LayoutEdits.CheckConnectivity(trial) != null)
+                        {
+                            continue;
+                        }
+                        _occA = t.Key;
+                        _occB = b;
+                        _occR1 = ra.ID;
+                        _occR2 = rc.ID;
+                        break;
+                    }
+                    if (_occR1 != 0)
+                    {
+                        break;
+                    }
+                }
+            }
+            if (pair.t != default && _occR1 == 0)
+            {
+                Log("INFO no free pair of tiles on a room border for the table part of this test; skipped.");
+            }
+            if (_occR1 != 0)
+            {
+                _occT1 = pair.t;
+                _occT2 = pair.u;
+                DissolveTableSet(_occT1);
+                DissolveTableSet(_occT2);
+                MoveBy(_occT1, (Vector3)_occA - Pos(_occT1).Rounded());
+                MoveBy(_occT2, (Vector3)_occB - Pos(_occT2).Rounded());
+                Log($"tables moved side by side onto {Fmt(_occA)} and {Fmt(_occB)} (room {_occR1}); {Fmt(_occB)} borders room {_occR2}.");
+            }
+
+            // An appliance on an outer edge tile whose floor can be removed (it would be binned).
+            occupants = TileOccupants.Take(EntityManager);
+            foreach (KeyValuePair<LayoutPosition, OccupantFlags> o in occupants.OrderBy(o => o.Key.x).ThenBy(o => o.Key.y))
+            {
+                LayoutPosition p = o.Key;
+                if (o.Value != OccupantFlags.Binned || !Indoor(p, out Room room) || live.GetFeatures(p).Any()
+                    || TileOccupants.WithNeighbours(p).Any(n => n == _occA || n == _occB)
+                    || !TileOccupants.Sides.Any(s => !live.Tiles.ContainsKey(p + s.D)))
+                {
+                    continue;
+                }
+                var trial = new LayoutBlueprint(live);
+                if (LayoutEdits.PaintTile(trial, p, Room.Null, occupants) != null || LayoutEdits.CheckConnectivity(trial) != null)
+                {
+                    continue;
+                }
+                Entity e = AllWith<CAppliance>().FirstOrDefault(a => HasComponent<CPosition>(a) && !HasComponent<CHeldBy>(a)
+                                                                     && ((LayoutPosition)Pos(a).Rounded()) == p && !HasComponent<CDoesNotOccupy>(a));
+                if (e == default)
+                {
+                    continue;
+                }
+                _occE = e;
+                _occETile = p;
+                _occERoom = room.ID;
+                Log($"appliance {EntityManager.GetComponentData<CAppliance>(e).ID} on edge tile {Fmt(p)} (room {room.ID}) will have its floor removed.");
+                break;
+            }
+            if (_occE == default)
+            {
+                Log("INFO no appliance on an edge tile whose floor could be removed; the warning part of this test is skipped.");
+            }
+            _occLayoutHash = FloorPlanSerializer.Hash(live);
+            _occReady = _occR1 != 0 || _occE != default;
+        }
+
+        private bool SameTableSet(Entity a, Entity b) =>
+            HasComponent<CPartOfTableSet>(a) && HasComponent<CPartOfTableSet>(b)
+            && EntityManager.GetComponentData<CPartOfTableSet>(a).TableSet == EntityManager.GetComponentData<CPartOfTableSet>(b).TableSet;
+
+        private void StepOccupiedGrouped()
+        {
+            if (!_occReady)
+            {
+                return;
+            }
+            if (_occR1 != 0)
+            {
+                if (!SameTableSet(_occT1, _occT2) && StepElapsed < 5f)
+                {
+                    Retry(0.25f);
+                    return;
+                }
+                Check(SameTableSet(_occT1, _occT2), "the two tables side by side form one table group");
+            }
+            List<Entity> players = AllWith<CPlayer>();
+            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
+            if (players.Count == 0 || service == null)
+            {
+                Fail("no player or FloorPlanService to open the editor with");
+                _occReady = false;
+                return;
+            }
+            service.RequestOpen(players[0]);
+        }
+
+        private void StepOccupiedEdit()
+        {
+            if (!_occReady)
+            {
+                return;
+            }
+            FloorPlanView view = FloorPlanView.TestInstance;
+            if ((view == null || !view.TestReady) && StepElapsed < 10f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            if (view == null || !view.TestReady)
+            {
+                Fail("the editor didn't open for the appliance test");
+                _occReady = false;
+                return;
+            }
+            view.TestSetVisible(true);
+            if (_occR1 != 0)
+            {
+                Check(view.TestOccupants.ContainsKey(_occB), $"the editor knows a table stands on {Fmt(_occB)}");
+                view.TestSelectRoom(_occR2);
+                view.TestPaint(_occB);
+                Check(view.TestDraft[_occB].ID == _occR2, $"repainting the floor under a table into another room is allowed ({view.TestMessage})");
+            }
+            if (_occE != default)
+            {
+                view.TestSelectBrush("Outdoors (remove floor)");
+                view.TestPaint(_occETile);
+                bool erased = !TileOccupants.IsIndoor(view.TestDraft, _occETile);
+                Check(erased && view.TestBinnedCount == 1 && view.TestMessage.Contains("thrown away"),
+                    $"removing the floor under an appliance is allowed, with a warning ({view.TestBinnedCount} flagged: {view.TestMessage})");
+            }
+            Shot("23-appliance-floor-edited");
+            view.TestApply();
+        }
+
+        private void StepOccupiedVerify()
+        {
+            if (!_occReady)
+            {
+                return;
+            }
+            bool closed = AllWith<CFloorPlanSession>().Count == 0;
+            bool split = _occR1 == 0 || (HasComponent<CPartOfTableSet>(_occT1) && HasComponent<CPartOfTableSet>(_occT2) && !SameTableSet(_occT1, _occT2));
+            bool marked = _occE == default || (EntityManager.Exists(_occE) && HasComponent<CDestroyApplianceAtDay>(_occE));
+            if ((!closed || !split || !marked) && StepElapsed < 8f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            Check(closed, "the edit with appliances on changed floor was applied");
+            LayoutBlueprint live = ReadLayout();
+            if (_occR1 != 0)
+            {
+                Check(live[_occB].ID == _occR2, $"{Fmt(_occB)} is now part of room {_occR2}");
+                Check(split, "a new wall between two joined tables splits their table group");
+                int across = 0;
+                foreach (Entity chair in AllWith<CApplianceGhostChair>())
+                {
+                    Entity table = EntityManager.GetComponentData<CApplianceGhostChair>(chair).Table;
+                    if (EntityManager.Exists(table) && HasComponent<CPosition>(table)
+                        && live[(LayoutPosition)Pos(chair).Rounded()].ID != live[(LayoutPosition)Pos(table).Rounded()].ID)
+                    {
+                        across++;
+                    }
+                }
+                Check(across == 0, $"no chair is left across a wall from its table ({across})");
+            }
+            if (_occE != default)
+            {
+                Check(marked, "the appliance left outdoors is marked to be thrown away at the start of the day (the game's bin)");
+            }
+            Shot("24-appliance-floor-applied");
+            List<Entity> players = AllWith<CPlayer>();
+            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
+            if (players.Count > 0 && service != null)
+            {
+                service.RequestOpen(players[0]);
+            }
+        }
+
+        private void StepOccupiedRestore()
+        {
+            if (!_occReady)
+            {
+                return;
+            }
+            FloorPlanView view = FloorPlanView.TestInstance;
+            if ((view == null || !view.TestReady) && StepElapsed < 10f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            if (view == null || !view.TestReady)
+            {
+                Fail("the editor didn't reopen to put the floor back");
+                _occReady = false;
+                return;
+            }
+            if (_occR1 != 0)
+            {
+                view.TestSelectRoom(_occR1);
+                view.TestPaint(_occB);
+            }
+            if (_occE != default)
+            {
+                view.TestSelectRoom(_occERoom);
+                view.TestPaint(_occETile);
+                Check(TileOccupants.IsIndoor(view.TestDraft, _occETile) && view.TestBinnedCount == 0,
+                    $"painting the floor back under the outdoor appliance is allowed ({view.TestMessage})");
+            }
+            view.TestApply();
+        }
+
+        private void StepOccupiedVerifyRestored()
+        {
+            if (!_occReady)
+            {
+                return;
+            }
+            bool closed = AllWith<CFloorPlanSession>().Count == 0;
+            bool joined = _occR1 == 0 || SameTableSet(_occT1, _occT2);
+            bool unmarked = _occE == default || (EntityManager.Exists(_occE) && !HasComponent<CDestroyApplianceAtDay>(_occE));
+            if ((!closed || !joined || !unmarked) && StepElapsed < 8f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            Check(closed && FloorPlanSerializer.Hash(ReadLayout()) == _occLayoutHash, "the floor is back as it was");
+            if (_occR1 != 0)
+            {
+                Check(joined, "with the wall gone again, the two tables form one group again");
+            }
+            if (_occE != default)
+            {
+                Check(unmarked, "the appliance back on indoor floor is no longer marked to be thrown away");
+            }
+        }
+
+        // ---- a real wall-mounted appliance whose wall is edited away ----
+        // A painting is hung on a tile with two walls, facing one of them. The editor then merges
+        // the room behind that wall into the painting's room; after Apply the painting must still
+        // exist and face its other wall (LayoutCommit's WallMountedFixup; vanilla only turns these
+        // when a player interacts with them). Then the floor is put back and the painting removed.
+
+        private Entity _wallE;
+        private int _wallId, _wallRoomP, _wallRoomN, _wallHash;
+        private LayoutPosition _wallP, _wallN;
+        private Orientation _wallFacing;
+        private bool _wallReady;
+
+        private void StepWallMountedSetup()
+        {
+            var all = KitchenData.GameData.Main.Get<KitchenData.Appliance>()
+                .Where(a => a.Properties != null && a.Properties.Any(p => p is CMustHaveWall) && !a.Properties.Any(p => p is CFixedRotation)).ToList();
+            KitchenData.Appliance pick = new[] { "Painting", "Calm Painting", "Stock Picture" }
+                .Select(n => all.FirstOrDefault(a => a.Name == n)).FirstOrDefault(a => a != null) ?? all.FirstOrDefault();
+            if (pick == null)
+            {
+                Log("INFO no wall-mounted appliance that can turn in this game version; the real wall-mounted test is skipped.");
+                return;
+            }
+            LayoutBlueprint live = ReadLayout();
+            Dictionary<LayoutPosition, OccupantFlags> occupants = TileOccupants.Take(EntityManager);
+            bool Free(LayoutPosition p) => !occupants.ContainsKey(p) && TileManager.GetOccupant((Vector3)p) == default(Entity) && !live.GetFeatures(p).Any();
+            bool Indoor(LayoutPosition p, out Room r) => live.Tiles.TryGetValue(p, out r) && LayoutHelpers.IsInside(r) && r.Type != RoomType.Garden;
+            foreach (KeyValuePair<LayoutPosition, Room> t in live.Tiles.OrderBy(t => Math.Abs(t.Key.x) + Math.Abs(t.Key.y)))
+            {
+                LayoutPosition p = t.Key;
+                if (!Indoor(p, out Room rp) || !Free(p) || TileOccupants.WithNeighbours(p).Any(n => occupants.ContainsKey(n)))
+                {
+                    continue;
+                }
+                foreach (var s in TileOccupants.Sides)
+                {
+                    LayoutPosition n = p + s.D;
+                    if (!TileOccupants.IsSolidWall(live, p, s.D) || !Indoor(n, out Room rn) || rn.ID == rp.ID || !Free(n))
+                    {
+                        continue;
+                    }
+                    var occ = new Dictionary<LayoutPosition, OccupantFlags>(occupants) { [p] = OccupantFlags.WallMounted | OccupantFlags.Binned };
+                    var trial = new LayoutBlueprint(live);
+                    if (LayoutEdits.PaintTile(trial, n, rp, occ) != null || LayoutEdits.CheckConnectivity(trial) != null
+                        || TileOccupants.IsSolidWall(trial, p, s.D) || !TileOccupants.HasSolidWall(trial, p))
+                    {
+                        continue;
+                    }
+                    _wallP = p;
+                    _wallN = n;
+                    _wallFacing = s.O;
+                    _wallRoomP = rp.ID;
+                    _wallRoomN = rn.ID;
+                    break;
+                }
+                if (_wallRoomP != 0)
+                {
+                    break;
+                }
+            }
+            if (_wallRoomP == 0)
+            {
+                Log("INFO no free tile with two walls next to a room it can merge with; the real wall-mounted test is skipped.");
+                return;
+            }
+            _wallId = pick.ID;
+            _wallHash = FloorPlanSerializer.Hash(live);
+            Entity e = EntityManager.CreateEntity();
+            EntityManager.AddComponentData(e, new CCreateAppliance { ID = pick.ID });
+            EntityManager.AddComponentData(e, new CPosition((Vector3)_wallP, _wallFacing.ToRotation()));
+            Log($"hung '{pick.Name}' on {Fmt(_wallP)} facing {_wallFacing} (the wall to {Fmt(_wallN)}, room {_wallRoomN}).");
+            _wallReady = true;
+        }
+
+        private void StepWallMountedSpawned()
+        {
+            if (!_wallReady)
+            {
+                return;
+            }
+            _wallE = AllWith<CAppliance>().FirstOrDefault(a => EntityManager.GetComponentData<CAppliance>(a).ID == _wallId
+                                                               && HasComponent<CPosition>(a) && HasComponent<CMustHaveWall>(a)
+                                                               && (LayoutPosition)Pos(a).Rounded() == _wallP);
+            if (_wallE == default && StepElapsed < 5f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            if (_wallE == default)
+            {
+                Fail("the wall-mounted appliance wasn't created");
+                _wallReady = false;
+                return;
+            }
+            Check(EntityManager.GetComponentData<CPosition>(_wallE).Rotation.ToOrientation() == _wallFacing,
+                $"(setup) the wall-mounted appliance faces {_wallFacing}");
+            List<Entity> players = AllWith<CPlayer>();
+            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
+            if (players.Count == 0 || service == null)
+            {
+                Fail("no player or FloorPlanService to open the editor with");
+                _wallReady = false;
+                return;
+            }
+            service.RequestOpen(players[0]);
+        }
+
+        private bool WallEditorReady(string what)
+        {
+            FloorPlanView view = FloorPlanView.TestInstance;
+            if ((view == null || !view.TestReady) && StepElapsed < 10f)
+            {
+                Retry(0.5f);
+                return false;
+            }
+            if (view == null || !view.TestReady)
+            {
+                Fail($"the editor didn't open {what}");
+                _wallReady = false;
+                return false;
+            }
+            view.TestSetVisible(true);
+            return true;
+        }
+
+        private void StepWallMountedEdit()
+        {
+            if (!_wallReady || !WallEditorReady("for the wall-mounted test"))
+            {
+                return;
+            }
+            FloorPlanView view = FloorPlanView.TestInstance;
+            Check(view.TestOccupants.TryGetValue(_wallP, out OccupantFlags f) && (f & OccupantFlags.WallMounted) != 0,
+                $"the editor knows a wall-mounted appliance hangs on {Fmt(_wallP)}");
+            view.TestSelectRoom(_wallRoomP);
+            view.TestPaint(_wallN);
+            Check(view.TestDraft[_wallN].ID == _wallRoomP,
+                $"removing the wall a wall-mounted appliance faces is allowed while it has another wall ({view.TestMessage})");
+            view.TestApply();
+        }
+
+        private void StepWallMountedVerify()
+        {
+            if (!_wallReady)
+            {
+                return;
+            }
+            bool closed = AllWith<CFloorPlanSession>().Count == 0;
+            if (!closed && StepElapsed < 8f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            Check(closed, "the wall-mounted edit was applied");
+            LayoutBlueprint live = ReadLayout();
+            bool alive = EntityManager.Exists(_wallE) && HasComponent<CPosition>(_wallE);
+            Orientation now = alive ? EntityManager.GetComponentData<CPosition>(_wallE).Rotation.ToOrientation() : Orientation.Null;
+            int side = Array.FindIndex(TileOccupants.Sides, s => s.O == now);
+            Check(alive && !HasComponent<CDestroyApplianceAtDay>(_wallE), "the wall-mounted appliance is still there and not marked for the bin");
+            Check(alive && side >= 0 && now != _wallFacing && TileOccupants.IsSolidWall(live, _wallP, TileOccupants.Sides[side].D),
+                $"the wall-mounted appliance turned to face a remaining wall (was {_wallFacing}, now {now})");
+            Shot("25-wall-mounted-turned");
+            List<Entity> players = AllWith<CPlayer>();
+            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
+            if (players.Count > 0 && service != null)
+            {
+                service.RequestOpen(players[0]);
+            }
+        }
+
+        private void StepWallMountedRestore()
+        {
+            if (!_wallReady || !WallEditorReady("to put the wall back"))
+            {
+                return;
+            }
+            FloorPlanView view = FloorPlanView.TestInstance;
+            view.TestSelectRoom(_wallRoomN);
+            view.TestPaint(_wallN);
+            view.TestApply();
+        }
+
+        private void StepWallMountedVerifyRestored()
+        {
+            if (!_wallReady)
+            {
+                return;
+            }
+            bool closed = AllWith<CFloorPlanSession>().Count == 0;
+            if (!closed && StepElapsed < 8f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            Check(closed && FloorPlanSerializer.Hash(ReadLayout()) == _wallHash, "the wall is back as it was");
+            if (EntityManager.Exists(_wallE))
+            {
+                EntityManager.DestroyEntity(_wallE); // as vanilla's DestroyAppliancesAtDay does
+            }
+        }
+
         private float _fovBefore;
         private float _centreYBefore;
 
@@ -1666,6 +2219,42 @@ namespace EasyFloorPlanner
             Check(inView, $"follow brings the chef back into view when zoomed in (viewport {v.x:0.00}, {v.y:0.00}; pan {PlayCamera.Pan})");
             Shot("20-play-camera-follow");
             PlayCamera.TestSetFollowSilently(false);
+        }
+
+        // ---- the camera steps back while another UI (another mod's window) has the player's input ----
+
+        /// <summary>Stands in for another mod's window: takes every player's input, as an open shop window does.</summary>
+        private sealed class ClaimsInput : Controllers.IInputConsumer
+        {
+            public Controllers.InputConsumerState TakeInput(int player_id, Controllers.InputState state) => Controllers.InputConsumerState.Consumed;
+        }
+
+        private static ClaimsInput _otherUi;
+
+        private void StepCameraOtherUiOpen()
+        {
+            if (StepElapsed < 0.1f)
+            {
+                Check(PlayCamera.TestMouseFree, "with no other UI open, the camera may use the mouse");
+                _otherUi = new ClaimsInput();
+                Controllers.LocalInputSourceConsumers.Register(_otherUi);
+                Retry(0.5f);
+                return;
+            }
+            Check(PlayCamera.TestProbeLast, "the camera's input probe stays last in the consumer queue");
+            Check(!PlayCamera.TestMouseFree, "while another UI takes the player's input, the camera leaves the mouse wheel and buttons alone");
+        }
+
+        private void StepCameraOtherUiClosed()
+        {
+            if (_otherUi != null)
+            {
+                Controllers.LocalInputSourceConsumers.Remove(_otherUi);
+                _otherUi = null;
+                Retry(0.5f);
+                return;
+            }
+            Check(PlayCamera.TestMouseFree, "once the other UI closes, the camera uses the mouse again");
         }
 
         // ---- "Camera Controls" in the pause menu ----
@@ -2728,7 +3317,7 @@ namespace EasyFloorPlanner
                 if (StepElapsed >= _pausedLogs * 5f)
                 {
                     _pausedLogs++;
-                    Log($"PAUSED #{_pausedLogs}: a popup is open (IsPaused={Time.IsPaused}, popups={w.PopupsOpen}, post={w.PostUnopened}); waiting for it to close.");
+                    Log($"PAUSED #{_pausedLogs}: a popup is open (IsPaused={Time.IsPaused}; start-day warning levels: popups={w.PopupsOpen}, post={w.PostUnopened}); waiting for it to close.");
                     Shot($"paused-{_pausedLogs}");
                 }
                 Retry(0.5f);

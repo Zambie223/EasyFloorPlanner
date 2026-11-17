@@ -170,7 +170,21 @@ namespace EasyFloorPlanner
         /// this is a draft, which shows cut-off floor and refuses Apply until it's fixed.
         /// Returns null on success or when nothing changes.
         /// </summary>
-        public static string SetEdge(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b, FeatureType? type)
+        public static string SetEdge(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b, FeatureType? type, IReadOnlyDictionary<LayoutPosition, OccupantFlags> occupants)
+        {
+            // A hatch or door isn't a wall a wall-mounted appliance can hang on.
+            bool wallCheck = new[] { a, b }.Any(p => occupants.TryGetValue(p, out OccupantFlags f) && (f & OccupantFlags.WallMounted) != 0);
+            LayoutBlueprint before = wallCheck ? new LayoutBlueprint(bp) : null;
+            string refused = SetEdgeUnchecked(bp, a, b, type);
+            if (refused == null && wallCheck && TileOccupants.LostWall(before, bp, new[] { a, b }, occupants).HasValue)
+            {
+                Restore(bp, before);
+                return "that would take away the only wall a wall-mounted appliance hangs on";
+            }
+            return refused;
+        }
+
+        private static string SetEdgeUnchecked(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b, FeatureType? type)
         {
             if (type.HasValue && !IsPlain(type.Value))
             {
@@ -252,7 +266,37 @@ namespace EasyFloorPlanner
         /// Reachability is checked for the whole draft in ValidateDraft, because a new room's first
         /// tile can't have a door yet. Returns null on success or when nothing changes.
         /// </summary>
-        public static string PaintTile(LayoutBlueprint bp, LayoutPosition target, Room brush, Func<LayoutPosition, bool> blocks)
+        public static string PaintTile(LayoutBlueprint bp, LayoutPosition target, Room brush, IReadOnlyDictionary<LayoutPosition, OccupantFlags> occupants)
+        {
+            // A wall-mounted appliance on the tile or beside it can lose its wall: keep what's
+            // needed to undo the paint (only then, so box painting stays cheap).
+            bool wallCheck = TileOccupants.WithNeighbours(target).Any(p => occupants.TryGetValue(p, out OccupantFlags f) && (f & OccupantFlags.WallMounted) != 0);
+            LayoutBlueprint before = wallCheck ? new LayoutBlueprint(bp) : null;
+            string refused = PaintTileUnchecked(bp, target, brush, occupants);
+            if (refused == null && wallCheck)
+            {
+                LayoutPosition? lost = TileOccupants.LostWall(before, bp, TileOccupants.WithNeighbours(target), occupants);
+                if (lost.HasValue)
+                {
+                    Restore(bp, before);
+                    return "that would take away the only wall a wall-mounted appliance hangs on";
+                }
+            }
+            return refused;
+        }
+
+        private static void Restore(LayoutBlueprint bp, LayoutBlueprint from)
+        {
+            bp.Tiles.Clear();
+            foreach (KeyValuePair<LayoutPosition, Room> t in from.Tiles)
+            {
+                bp.Tiles[t.Key] = t.Value;
+            }
+            bp.Features.Clear();
+            bp.Features.AddRange(from.Features);
+        }
+
+        private static string PaintTileUnchecked(LayoutBlueprint bp, LayoutPosition target, Room brush, IReadOnlyDictionary<LayoutPosition, OccupantFlags> occupants)
         {
             bool stored = bp.Tiles.TryGetValue(target, out Room current);
             bool indoor = stored && LayoutHelpers.IsInside(current);
@@ -273,9 +317,11 @@ namespace EasyFloorPlanner
             {
                 return "that tile has a special door (like the front door) that can't be moved";
             }
-            if (blocks(target))
+            occupants.TryGetValue(target, out OccupantFlags here);
+            string occupied = TileOccupants.Refusal(indoor, !erase, here);
+            if (occupied != null)
             {
-                return "an appliance is in the way";
+                return occupied;
             }
 
             if (erase)
@@ -329,7 +375,7 @@ namespace EasyFloorPlanner
         /// The host's check of a whole edit-mode draft before committing it (never trust the client).
         /// Returns null if <paramref name="after"/> is a legal result of editing <paramref name="before"/>.
         /// </summary>
-        public static string ValidateDraft(LayoutBlueprint before, LayoutBlueprint after, Func<LayoutPosition, bool> blocks)
+        public static string ValidateDraft(LayoutBlueprint before, LayoutBlueprint after, IReadOnlyDictionary<LayoutPosition, OccupantFlags> occupants)
         {
             // Special features (front door, garage, greenhouse... anything but plain doors and
             // hatches) can't be added, removed or moved.
@@ -368,9 +414,11 @@ namespace EasyFloorPlanner
                 {
                     return $"tile {Fmt(p)} has a door that can't be moved";
                 }
-                if (blocks(p))
+                occupants.TryGetValue(p, out OccupantFlags here);
+                string occupied = TileOccupants.Refusal(inB, inA, here);
+                if (occupied != null)
                 {
-                    return $"an appliance is in the way at {Fmt(p)}";
+                    return $"{occupied} {Fmt(p)}";
                 }
                 if (inA && !inB)
                 {
@@ -396,6 +444,12 @@ namespace EasyFloorPlanner
                 {
                     return "a room's type can't be changed, and new rooms must be a kitchen or dining room";
                 }
+            }
+
+            LayoutPosition? lost = TileOccupants.LostWall(before, after, occupants.Keys, occupants);
+            if (lost.HasValue)
+            {
+                return $"the wall-mounted appliance at {Fmt(lost.Value)} would have no wall left";
             }
 
             return CheckConnectivity(after);
