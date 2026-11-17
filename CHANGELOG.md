@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-17)
 
 - **Appliances no longer block floor edits.** You can repaint the floor under an appliance into another room, or move walls around it, and it stays where it is.
   - **Removing the floor under an appliance** is allowed with a warning: the game throws away appliances left outdoors at the start of the day, so the editor marks them in yellow. Painting the floor back under them saves them.
