@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Smoother nights in very big restaurants:** at night the game re-checks every frame whether customers can walk to every chair. With hundreds of chairs that made building at night laggy. In restaurants with more than 64 chairs the mod now spreads those checks over a few frames, so a chair's tick or cross can take up to half a second to update after you move something. The check at the start of the day is still complete.
+- **Seat counts over tables** at night are worked out from cached paths in very big restaurants (more than 64 seats), recomputed every 30 frames instead of every frame, so a count can take up to half a second to update. The start of the day still uses a full check.
+- **Lighting of far rooms** in big restaurants uses far fewer textures, and its work is spread over frames instead of a hitch four times a second.
+- **Optional profiler** for performance reports: off unless a file named `profile.flag` is in the mod's folder when the game starts. It then writes to the game log which game systems take the most time during 30 s of night and 30 s of day.
+- **Fixed:** the game log reported version 0.2.0 for 0.3.0.
+
 ## 0.3.0 (2026-11-17)
 
 - **Appliances no longer block floor edits.** You can repaint the floor under an appliance into another room, or move walls around it, and it stays where it is.

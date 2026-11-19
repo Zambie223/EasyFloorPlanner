@@ -246,6 +246,7 @@ namespace EasyFloorPlanner
                 StepAreaReopen, StepAreaVerifyReopened, StepAreaReset, StepAreaVerifyReset,
                 StepOccupiedSetup, StepOccupiedGrouped, StepOccupiedEdit, StepOccupiedVerify, StepOccupiedRestore, StepOccupiedVerifyRestored,
                 StepWallMountedSetup, StepWallMountedSpawned, StepWallMountedEdit, StepWallMountedVerify, StepWallMountedRestore, StepWallMountedVerifyRestored,
+                StepChairPathingSpread,
                 StepPlayCamera, StepPlayCameraZoom, StepPlayCameraPan, StepPlayCameraFollow, StepPlayCameraReset,
                 StepCameraOtherUiOpen, StepCameraOtherUiClosed,
                 StepCameraControlsPause, StepCameraControlsOpen, StepCameraControlsPages,
@@ -2127,6 +2128,51 @@ namespace EasyFloorPlanner
             {
                 EntityManager.DestroyEntity(_wallE); // as vanilla's DestroyAppliancesAtDay does
             }
+        }
+
+        // ---- night chair path checks spread over frames (NightChairPathing) ----
+        // The test restaurant has too few chairs for the spreading to switch on, so the threshold is
+        // lowered for this step. After a full refresh cycle every ghost chair's IsPathable must match
+        // a fresh check made the way vanilla's MarkUnpathableChairs does it.
+
+        private int _chairThrottleBefore = -1;
+
+        private void StepChairPathingSpread()
+        {
+            if (_chairThrottleBefore < 0)
+            {
+                _chairThrottleBefore = NightChairPathing.ThrottleAbove;
+                NightChairPathing.ThrottleAbove = 0;
+            }
+            if (StepElapsed < 2f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            bool spread = NightChairPathing.LastThrottled;
+            int checkedLast = NightChairPathing.LastChecked;
+            NightChairPathing.ThrottleAbove = _chairThrottleBefore;
+            _chairThrottleBefore = -1;
+            List<Entity> chairs = AllWith<CApplianceGhostChair>().Where(c => HasComponent<CPosition>(c)).ToList();
+            if (chairs.Count == 0)
+            {
+                Log("INFO no ghost chairs at night; the spread-out chair path check isn't exercised.");
+                return;
+            }
+            Check(spread, $"with the threshold lowered, night chair path checks are spread over frames ({checkedLast} of {chairs.Count} checked in the last frame)");
+            var path = new NavMeshPath();
+            int wrong = 0, pathable = 0;
+            foreach (Entity c in chairs)
+            {
+                NavMesh.CalculatePath(SPerformTableUpdate.DefaultPathingSource, Pos(c), -1, path);
+                bool expected = path.status == NavMeshPathStatus.PathComplete;
+                pathable += expected ? 1 : 0;
+                if (EntityManager.GetComponentData<CApplianceGhostChair>(c).IsPathable != expected)
+                {
+                    wrong++;
+                }
+            }
+            Check(wrong == 0, $"spread-out chair checks agree with a full check ({wrong} of {chairs.Count} differ; {pathable} pathable)");
         }
 
         private float _fovBefore;

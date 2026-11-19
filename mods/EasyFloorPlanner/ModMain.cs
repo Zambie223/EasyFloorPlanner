@@ -16,7 +16,9 @@ namespace EasyFloorPlanner
     {
         public const string Id = "zambie.easyfloorplanner";
         public const string Name = "Easy Floor Planner";
-        public const string Version = "0.2.0";
+        /// <summary>The csproj Version (from the DLL, so it can't go stale; 0.3.0 shipped logging "v0.2.0").</summary>
+        public static readonly string Version =
+            (typeof(ModMain).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "?").Split('+')[0];
 
         private static Harmony _harmony;
         private static bool _resolverRegistered;
@@ -29,6 +31,7 @@ namespace EasyFloorPlanner
             {
                 _harmony = new Harmony(Id);
                 _harmony.PatchAll(typeof(ModMain).Assembly);
+                SystemProfiler.TryStart(_harmony); // opt-in: only with profile.flag
             }
             PlayCamera.Install();
 #if DEBUG
