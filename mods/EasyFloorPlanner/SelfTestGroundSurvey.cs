@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using HarmonyLib;
 using Kitchen;
 using KitchenData;
 using UnityEngine;
@@ -114,6 +115,49 @@ namespace EasyFloorPlanner
                 Component[] roots = r.transform.root.GetComponents<Component>();
                 sb.Append($"; root components [{string.Join(",", roots.Select(c => c.GetType().Name))}]");
                 ModMain.Log(sb.ToString());
+            }
+        }
+
+        /// <summary>
+        /// The reroll-terminal models (EFP's Floor Plan terminal reuses one): every object in each
+        /// view's hierarchy with its components, renderers, meshes and materials, so a hologram of our
+        /// own can replace the dice (user request 2026-11-19).
+        /// </summary>
+        public static void LogTerminals()
+        {
+            foreach (RerollBlueprintView v in UnityEngine.Object.FindObjectsOfType<RerollBlueprintView>())
+            {
+                var title = AccessTools.Field(typeof(RerollBlueprintView), "Title")?.GetValue(v) as TMPro.TextMeshPro;
+                ModMain.Log($"[SELFTEST] SURVEY terminal view '{Path(v.transform)}' title '{title?.text}' at {v.transform.position}");
+                Dump(v.transform, 0);
+            }
+        }
+
+        private static void Dump(Transform t, int depth)
+        {
+            var sb = new StringBuilder($"[SELFTEST] SURVEY terminal {new string(' ', depth * 2)}- '{t.name}' active {t.gameObject.activeSelf} layer {LayerMask.LayerToName(t.gameObject.layer)} "
+                                       + $"local pos {t.localPosition} rot {t.localRotation.eulerAngles} scale {t.localScale}; components [{string.Join(",", t.GetComponents<Component>().Select(c => c.GetType().Name))}]");
+            MeshFilter mf = t.GetComponent<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null)
+            {
+                sb.Append($"; mesh '{mf.sharedMesh.name}' {mf.sharedMesh.vertexCount} verts bounds {mf.sharedMesh.bounds.size}");
+            }
+            Renderer r = t.GetComponent<Renderer>();
+            if (r != null)
+            {
+                foreach (Material m in r.sharedMaterials.Where(m => m != null))
+                {
+                    sb.Append($"; material '{m.name}' shader '{m.shader.name}'");
+                }
+            }
+            ModMain.Log(sb.ToString());
+            if (r != null && r.sharedMaterial != null && depth < 8)
+            {
+                LogMaterial(r.sharedMaterial, $"of '{t.name}'");
+            }
+            foreach (Transform c in t)
+            {
+                Dump(c, depth + 1);
             }
         }
 
@@ -249,6 +293,27 @@ namespace EasyFloorPlanner
             }
             UnityEngine.Object.Destroy(tex);
             return (voids, n);
+        }
+
+        /// <summary>A perspective close-up of the Floor Plan terminal (from the front, a little above), for SaveRaw.</summary>
+        public void RenderTerminal(Vector3 at)
+        {
+            var go = new GameObject("EasyFloorPlanner Terminal Close-up");
+            Cam = go.AddComponent<Camera>();
+            if (Camera.main != null)
+            {
+                Cam.CopyFrom(Camera.main);
+            }
+            Cam.orthographic = false;
+            Cam.fieldOfView = 28f;
+            Cam.aspect = 1f;
+            go.transform.position = at + new Vector3(0f, 2.4f, -3.4f);
+            go.transform.LookAt(at + new Vector3(0f, 0.85f, 0f));
+            Cam.nearClipPlane = 0.1f;
+            Cam.farClipPlane = 100f;
+            Target = new RenderTexture(900, 900, 24, RenderTextureFormat.ARGB32);
+            Cam.targetTexture = Target;
+            Cam.enabled = true;
         }
 
         /// <summary>Saves the close-up as is (no coverage analysis).</summary>

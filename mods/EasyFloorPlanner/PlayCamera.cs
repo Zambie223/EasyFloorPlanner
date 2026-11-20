@@ -48,7 +48,8 @@ namespace EasyFloorPlanner
         /// <summary>Bottom share of the screen kept clear for the player cards.</summary>
         public const float HudFraction = 0.08f;
 
-        public const float MinZoom = 0.6f;
+        /// <summary>Furthest zoom-out (a setting: 0.6 by default, see Settings.ZoomOut).</summary>
+        public static float MinZoom => Settings.MinZoom;
         public const float MaxZoom = 3f;
         private const float WheelStep = 1.12f;
         private const float StickZoomRate = 1.4f;   // e-folds per second at full stick
@@ -182,6 +183,9 @@ namespace EasyFloorPlanner
             {
                 FollowChefs();
             }
+            // The zoom-out limit is a setting, so it can tighten while zoomed out.
+            Zoom = Mathf.Clamp(Zoom, MinZoom, MaxZoom);
+            EditorZoom = Mathf.Clamp(EditorZoom, MinZoom, MaxZoom);
             Pan = ClampPan(Pan, Zoom);
             ApplySettings(editor);
         }
@@ -196,7 +200,7 @@ namespace EasyFloorPlanner
             Framing.m_ScreenY = Mathf.Clamp(VanillaScreenY - hud / 2f + pan.y, -0.5f, 1.5f);
             // Widen the game's FOV limits only as far as the zoom (and HUD margin) needs.
             Framing.m_MinimumFOV = VanillaMinFov / Mathf.Max(zoom, 1f);
-            Framing.m_MaximumFOV = Mathf.Min(VanillaMaxFov / ((1f - hud) * Mathf.Min(zoom, 1f)), 60f);
+            Framing.m_MaximumFOV = Mathf.Min(VanillaMaxFov / ((1f - hud) * Mathf.Min(zoom, 1f)), Settings.MaxFov);
             Applied = true;
         }
 
@@ -374,7 +378,8 @@ namespace EasyFloorPlanner
                 float wheel = mouse.scroll.ReadValue().y;
                 if (Mathf.Abs(wheel) > 0.01f && (!editor || ctrl))
                 {
-                    zoom *= wheel > 0f ? WheelStep : 1f / WheelStep;
+                    float step = Mathf.Pow(WheelStep, Settings.ZoomSpeed / 100f);
+                    zoom *= wheel > 0f ? step : 1f / step;
                 }
                 if (!editor)
                 {
@@ -424,11 +429,11 @@ namespace EasyFloorPlanner
                 }
                 if (rb)
                 {
-                    zoom *= Mathf.Exp(stick.y * StickZoomRate * dt);
+                    zoom *= Mathf.Exp(stick.y * StickZoomRate * (Settings.ZoomSpeed / 100f) * dt);
                 }
                 else if (!editor)
                 {
-                    pan += stick * (StickPanRate * dt);
+                    pan += stick * (StickPanRate * (Settings.PanSpeed / 100f) * dt);
                 }
                 if (pad.rightStickButton.wasPressedThisFrame && !editor)
                 {
@@ -463,7 +468,7 @@ namespace EasyFloorPlanner
             ShowToast("Camera reset");
         }
 
-        public static void SetFollow(bool on)
+        public static void SetFollow(bool on, bool toast = true)
         {
             Follow = on;
             try
@@ -474,7 +479,10 @@ namespace EasyFloorPlanner
             {
                 // Preference not saved; it still applies for this session.
             }
-            ShowToast(on ? "Camera: follows your chef when zoomed in" : "Camera: stays where you put it");
+            if (toast)
+            {
+                ShowToast(on ? "Camera: follows your chef when zoomed in" : "Camera: stays where you put it");
+            }
         }
 
         private static void ShowToast(string text)

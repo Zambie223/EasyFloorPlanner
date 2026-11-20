@@ -21,6 +21,7 @@ namespace EasyFloorPlanner
             (typeof(ModMain).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "?").Split('+')[0];
 
         private static Harmony _harmony;
+        internal static Harmony Harmony => _harmony;
         private static bool _resolverRegistered;
 
         public void PostActivate(KitchenMods.Mod mod)
@@ -31,9 +32,10 @@ namespace EasyFloorPlanner
             {
                 _harmony = new Harmony(Id);
                 _harmony.PatchAll(typeof(ModMain).Assembly);
-                SystemProfiler.TryStart(_harmony); // opt-in: only with profile.flag
+                SystemProfiler.TryStart(_harmony); // opt-in: profile.flag, or later the Mod List button (SystemProfiler.Request)
             }
             PlayCamera.Install();
+            Settings.Load();
 #if DEBUG
             SelfTest.TryActivate();
 #endif

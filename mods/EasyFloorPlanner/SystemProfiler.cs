@@ -15,7 +15,10 @@ namespace EasyFloorPlanner
     /// <summary>
     /// Opt-in performance diagnostic (added 2026-11-19 for a very large restaurant that still drops
     /// frames). Off unless the file &lt;game&gt;\Mods\EasyFloorPlanner\profile.flag exists when the
-    /// game starts; with no flag nothing is patched, so it costs nothing.
+    /// game starts, or a player presses "Profile next night and day" in EFP's Mod List options
+    /// (<see cref="Request"/>); until then nothing is patched, so it costs nothing. The flag also
+    /// starts the customer movement probe, which changes the path budget for a while (a test, not
+    /// for players), so the button doesn't.
     ///
     /// When on, it times every ECS system's Update (SystemBase.Update, the one entry point all game
     /// and mod systems go through; in this Entities version groups are ComponentSystems, so they
@@ -35,7 +38,11 @@ namespace EasyFloorPlanner
 
         public static bool Active { get; private set; }
 
+        /// <summary>The options button was pressed; profiling starts on the next frame.</summary>
+        public static bool Requested { get; private set; }
+
         private static MethodInfo _update;
+        private static bool _patched;
 
         /// <summary>0 = not measuring, 1 = night, 2 = day (set each frame by <see cref="SystemProfilerClock"/>).</summary>
         internal static int Phase;
@@ -62,17 +69,63 @@ namespace EasyFloorPlanner
             {
                 return;
             }
-            _update = AccessTools.Method(typeof(SystemBase), "Update");
-            if (_update == null)
+            if (Start(harmony, "profile.flag found"))
             {
-                ModMain.LogWarning("Profiler: SystemBase.Update not found; not profiling.");
+                CustomerMovementProbe.TryStart(harmony);
+            }
+        }
+
+        /// <summary>
+        /// The options button. The patch is applied from a MonoBehaviour's Update on the next frame,
+        /// outside any ECS system: patching SystemBase.Update from inside one (the menu may run in a
+        /// system) is the kind of thing that froze the game when unpatching (2026-11-19).
+        /// </summary>
+        public static void Request()
+        {
+            if (Active || Requested)
+            {
                 return;
             }
-            harmony.Patch(_update, prefix: new HarmonyMethod(typeof(SystemProfiler), nameof(Prefix)),
-                postfix: new HarmonyMethod(typeof(SystemProfiler), nameof(Postfix)));
+            Requested = true;
+            var go = new GameObject("EasyFloorPlanner Profiler Start");
+            UnityEngine.Object.DontDestroyOnLoad(go);
+            go.AddComponent<StartNextFrame>();
+        }
+
+        private class StartNextFrame : MonoBehaviour
+        {
+            private void Update()
+            {
+                Requested = false;
+                Start(ModMain.Harmony, "requested from the options");
+                Destroy(gameObject);
+            }
+        }
+
+        /// <summary>Starts a fresh night and day measurement; patches on the first start only.</summary>
+        private static bool Start(Harmony harmony, string why)
+        {
+            if (Active || harmony == null)
+            {
+                return false;
+            }
+            if (!_patched)
+            {
+                _update = AccessTools.Method(typeof(SystemBase), "Update");
+                if (_update == null)
+                {
+                    ModMain.LogWarning("Profiler: SystemBase.Update not found; not profiling.");
+                    return false;
+                }
+                harmony.Patch(_update, prefix: new HarmonyMethod(typeof(SystemProfiler), nameof(Prefix)),
+                    postfix: new HarmonyMethod(typeof(SystemProfiler), nameof(Postfix)));
+                _patched = true;
+            }
+            Phases[1] = new PhaseData();
+            Phases[2] = new PhaseData();
             Active = true;
-            CustomerMovementProbe.TryStart(harmony);
-            ModMain.Log($"Profiler on (profile.flag found): timing every game system for {PhaseSeconds:0} s of night and {PhaseSeconds:0} s of day in a restaurant.");
+            ModMain.Log($"Profiler on ({why}): timing every game system for {PhaseSeconds:0} s of night and {PhaseSeconds:0} s of day in a restaurant.");
+            return true;
         }
 
         private static void Prefix(out long __state) => __state = Stopwatch.GetTimestamp();
@@ -163,7 +216,9 @@ namespace EasyFloorPlanner
             // that's on the call stack froze the game (2026-11-19). With Active off, the postfix
             // returns at once; what's left is a timestamp read per system, a few microseconds a frame.
             Active = false;
-            ModMain.Log("Profiler finished (it stays idle until the game restarts). Delete profile.flag to keep it off next time.");
+            ModMain.Log(File.Exists(FlagPath)
+                ? "Profiler finished (idle now; the options button can run it again). Delete profile.flag to keep it off next time."
+                : "Profiler finished (idle now; the options button can run it again).");
         }
     }
 

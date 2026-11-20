@@ -6,6 +6,7 @@ using Kitchen.Formatters.Kitchen;
 using Kitchen.Layouts;
 using Kitchen.Layouts.Features;
 using MessagePack;
+using Platforms;
 using TMPro;
 using UnityEngine;
 
@@ -20,7 +21,7 @@ namespace EasyFloorPlanner
     /// </summary>
     internal static class FloorPlanSerializer
     {
-        private const int FormatVersion = 4;
+        private const int FormatVersion = 5; // 5 (2026-11-19): outside doors and a movable front door
         private const int ViewFields = 18;
         private const int ResponseFields = 6;
         /// <summary>Every tile the editor can address (MaxExtent + 2 each way), so a full-size layout always fits.</summary>
@@ -391,8 +392,19 @@ namespace EasyFloorPlanner
     [HarmonyPatch(typeof(RerollBlueprintView), "UpdateData", typeof(RerollBlueprintView.ViewData))]
     internal static class FloorPlanTerminalLabelPatch
     {
-        private static void Postfix(RerollBlueprintView.ViewData data, TextMeshPro ___Title)
+#if DEBUG
+        internal static int TestLastPrice;
+#endif
+
+        private static void Postfix(RerollBlueprintView __instance, RerollBlueprintView.ViewData data, TextMeshPro ___Title)
         {
+            if (FloorPlanIds.IsTerminalLabel(data.Price))
+            {
+#if DEBUG
+                TestLastPrice = data.Price;
+#endif
+                FloorPlanHologram.Apply(__instance); // drafting tools instead of the reroll dice
+            }
             if (___Title == null)
             {
                 return;
@@ -404,6 +416,10 @@ namespace EasyFloorPlanner
             else if (data.Price == FloorPlanIds.LabelWatch)
             {
                 ___Title.text = "Watch";
+            }
+            else if (data.Price == FloorPlanIds.LabelHostOnly)
+            {
+                ___Title.text = Session.NetworkedPlayState == NetworkedPlayState.Client ? "Host only" : "Floor Plan";
             }
         }
     }

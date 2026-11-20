@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using Controllers;
 using Kitchen;
 using Kitchen.Layouts;
 using KitchenData;
@@ -217,6 +218,12 @@ namespace EasyFloorPlanner
 
         public bool IsInUse => !Sessions.IsEmpty;
 
+        /// <summary>
+        /// Whether this player may open the editor (the host's "Who can edit" setting). Players on
+        /// the host's machine (local co-op) always may. Anyone may watch.
+        /// </summary>
+        public static bool MayEdit(CPlayer player) => Settings.Editors == Settings.WhoCanEdit.Everyone || player.InputSource == (int)InputSourceIdentifier.Identifier;
+
         private void HandleOpenRequests()
         {
             foreach (Entity player in OpenRequests)
@@ -229,6 +236,11 @@ namespace EasyFloorPlanner
                 {
                     // One editor at a time; everyone else can watch (the terminal shows "Watch").
                     OpenSpectator(player, cPlayer, selfTest: false);
+                    continue;
+                }
+                if (!MayEdit(cPlayer))
+                {
+                    ModMain.Log($"Player {cPlayer.ID} can't open the floor plan editor: the host allows only their own players to edit.");
                     continue;
                 }
                 Entity session = EntityManager.CreateEntity();
@@ -419,11 +431,19 @@ namespace EasyFloorPlanner
                     return;
 
                 case FloorPlanAction.Apply:
+                case FloorPlanAction.ApplyKeepOpen:
                     string error = TryApply(response.Draft, response.CameraArea);
-                    if (error == null)
+                    if (error == null && response.Action == FloorPlanAction.Apply)
                     {
                         CloseSession(session, "changes applied");
                         return;
+                    }
+                    if (error == null)
+                    {
+                        status.LastSucceeded = true;
+                        status.Message = "";
+                        ModMain.Log("Changes applied; the editor stays open.");
+                        break;
                     }
                     status.LastSucceeded = false;
                     status.Message = error;
@@ -477,7 +497,7 @@ namespace EasyFloorPlanner
                 int binned = TileOccupants.CountBinned(live, draft, occupants);
                 LayoutCommit.Result r = LayoutCommit.Commit(EntityManager, TileManager, layout, draft);
                 ModMain.Log($"Applied a floor plan draft: {draft.Tiles.Count} tiles, {draft.Features.Count} features; scenery moved {r.SceneryMoved}, removed {r.SceneryRemoved}; "
-                            + $"appliances left outdoors {binned}, wall-mounted turned {r.WallMountedTurned}, table groups re-formed {r.TableGroupsReformed}, chairs cleared {r.ChairsCleared}.");
+                            + $"appliances left outdoors {binned}, wall-mounted turned {r.WallMountedTurned}, table groups re-formed {r.TableGroupsReformed}, chairs cleared {r.ChairsCleared}; front door moved {r.FrontDoorMoved}, scenery cleared from new doorways {r.DoorwaySceneryRemoved}.");
             }
 
             // After the commit, which may have resized the restaurant (and moved a whole-restaurant framing with it).
@@ -536,7 +556,8 @@ namespace EasyFloorPlanner
                 return false;
             }
             Service = Service ?? World.GetExistingSystem<FloorPlanService>();
-            return Service != null;
+            // Host only: other players can't use it unless someone is editing (then they watch).
+            return Service != null && (Service.IsInUse || FloorPlanService.MayEdit(EntityManager.GetComponentData<CPlayer>(data.Interactor)));
         }
 
         protected override void Perform(ref InteractionData data)
@@ -706,7 +727,8 @@ namespace EasyFloorPlanner
             {
                 return;
             }
-            int label = Sessions.IsEmpty ? FloorPlanIds.LabelFloorPlan : FloorPlanIds.LabelWatch;
+            int label = !Sessions.IsEmpty ? FloorPlanIds.LabelWatch
+                : Settings.Editors == Settings.WhoCanEdit.HostOnly ? FloorPlanIds.LabelHostOnly : FloorPlanIds.LabelFloorPlan;
             using NativeArray<CLinkedView> views = Terminals.ToComponentDataArray<CLinkedView>(Allocator.Temp);
             foreach (CLinkedView view in views)
             {

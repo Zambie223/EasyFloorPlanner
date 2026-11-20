@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.0 (2026-11-19)
+
+- **Doors to the outside:** the Door brush now works on the building's side and back walls. Customers and chefs can both use them (customers still queue at the front door).
+- **A yard round the building:** while there's a side or back door, chefs can walk a 2-tile yard all round the building. In City and Turbo the neighbouring buildings stand back to leave an alley. Scenery right outside a new door is cleared. Appliances still can't be put down outside.
+- **Move the front door:** a new Front door brush moves it to another spot on the front wall. The queue, nameplate, reroll and practice terminals, outside bin and the setting's front decorations follow.
+- **Front decorations follow the restaurant:** in Country-type, Witch Hut and Halloween settings, the fence or wall along the front (with its gap at the door) and the Country path to the door are refitted when the restaurant or its door changes.
+- **A new look for the Floor Plan terminal:** its hologram is now a drafting board with a set square and a pencil instead of the reroll dice.
+- **Weather everywhere:** rain, snow and the other weather now fall over the whole restaurant and its surroundings, not just around the original building (indoor tiles stay dry). Only the parts the camera can see are drawn.
+- **Fixed:** 0.3.1 raised the path-finding budget in every restaurant, not only in very big ones as intended. It's now raised only when the restaurant's walkable area is well beyond the game's original one.
+- **Settings,** in Pause → Mods with [Mod List](https://github.com/Zambie223/PlateUp-ModList) 0.2.0 or later (recommended; the mod still works without it):
+  - Follow your chef, zoom speed, pan speed, and how far out the camera can zoom;
+  - a colourblind-friendly palette for the editor;
+  - remember the editor's mode and brush between sessions (off by default);
+  - Apply keeps the editor open (off by default);
+  - who can edit: everyone, or only the host's players (the host's setting counts; everyone can still watch);
+  - weather everywhere on or off;
+  - a button that runs the profiler for the next night and day, instead of the `profile.flag` file (which still works).
+- **Cancel asks first:** with changes that aren't applied, Esc / Back now asks you to press it again before it throws your draft away.
+- **Bigger boxes:** Shift + drag now paints boxes up to 127 x 127 (was 40 x 40), and shows the box's size while you drag.
+- **Fixed:** the controller help in wall mode didn't mention the Front door brush, and painting the tile under the front door said it "can't be moved" (it can, with the Front door brush).
+- **Compatibility:** the editor's network messages changed, so every player needs the same version to use the Floor Plan editor together.
+
 ## 0.3.1 (2026-11-19)
 
 - **Smoother nights in very big restaurants:** at night the game re-checks every frame whether customers can walk to every chair. With hundreds of chairs that made building at night laggy. In restaurants with more than 64 chairs the mod now spreads those checks over a few frames, so a chair's tick or cross can take up to half a second to update after you move something. The check at the start of the day is still complete.

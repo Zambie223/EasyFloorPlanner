@@ -37,7 +37,7 @@ namespace EasyFloorPlanner
         // The numeric values are sent to spectators (FloorPlanCursor.Mode).
         private enum Mode { Tiles = 0, Walls = 1, Camera = 2 }
 
-        private static readonly Color CameraColour = new Color(0.25f, 0.85f, 1f);
+        private static Color CameraColour => EditorColours.Camera;
 
         private class Brush
         {
@@ -103,12 +103,13 @@ namespace EasyFloorPlanner
         private readonly List<Brush> Brushes = new List<Brush>();
         private int BrushIndex;
 
-        /// <summary>Wall-mode brushes: what a clicked wall becomes. Shown on the cursor and in the HUD.</summary>
-        private static readonly (string Label, FeatureType? Type, Color Colour)[] EdgeBrushes =
+        /// <summary>Wall-mode brushes: what a clicked wall becomes. Shown on the cursor and in the HUD (colours: EditorColours.Edge).</summary>
+        private static readonly (string Label, FeatureType? Type)[] EdgeBrushes =
         {
-            ("Wall", null, new Color(0.85f, 0.85f, 0.85f)),
-            ("Hatch (serving window)", FeatureType.Hatch, new Color(1f, 0.6f, 0.1f)),
-            ("Door", FeatureType.Door, new Color(0.2f, 0.85f, 0.3f)),
+            ("Wall", null),
+            ("Hatch (serving window)", FeatureType.Hatch),
+            ("Door", FeatureType.Door),
+            ("Front door", FeatureType.FrontDoor),
         };
         private int EdgeBrushIndex = 2; // Door
         private (LayoutPosition, LayoutPosition)? LastEdge;
@@ -137,6 +138,23 @@ namespace EasyFloorPlanner
 
         private string Message = "";
         private float MessageUntil;
+
+        /// <summary>A second Esc / Back before this time discards the draft.</summary>
+        private float DiscardArmedUntil = -1f;
+        private const float DiscardWindow = 3f;
+        private Settings.Palette ShownPalette = Settings.EditorPalette;
+
+        private bool HasUnappliedChanges => Draft != null && Committed != null
+            && (FloorPlanSerializer.Hash(Draft) != CommittedHash || !DraftArea.SameAs(CommittedArea));
+
+        /// <summary>
+        /// The "Remember mode and brush" setting: what the last editor on this machine closed with
+        /// (this game session only; a room is remembered by its ID, so it's only found again in
+        /// the same restaurant).
+        /// </summary>
+        private static Mode RememberedMode = Mode.Tiles;
+        private static int RememberedEdgeBrush = 2; // Door
+        private static (int roomId, RoomType roomType, RoomType newType, bool erase)? RememberedBrush;
         private LayoutPosition? FlashTile;
         private float FlashUntil;
 
@@ -228,13 +246,18 @@ namespace EasyFloorPlanner
             if (data.Layout != null && data.LayoutHash != CommittedHash)
             {
                 bool hadDraft = Committed != null;
+                bool ours = hadDraft && Draft != null && FloorPlanSerializer.Hash(Draft) == data.LayoutHash; // our own Apply, editor kept open
                 Committed = data.Layout;
                 CommittedHash = data.LayoutHash;
-                if (hadDraft)
+                if (hadDraft && !ours)
                 {
                     ShowMessage("The restaurant layout changed; your draft was reset.");
                 }
                 ResetDraft();
+                if (!hadDraft)
+                {
+                    RestoreTools();
+                }
             }
             if (AwaitingSequence != 0 && data.AckSequence >= AwaitingSequence)
             {
@@ -242,6 +265,10 @@ namespace EasyFloorPlanner
                 if (!data.LastSucceeded && !string.IsNullOrEmpty(data.Status))
                 {
                     ShowMessage("Can't apply: " + data.Status);
+                }
+                else if (data.LastSucceeded)
+                {
+                    ShowMessage("Changes applied."); // only when the editor stays open (ApplyKeepOpen)
                 }
             }
             OverlayDirty = true;
@@ -494,10 +521,19 @@ namespace EasyFloorPlanner
                 cancel = false;
                 ShowMessage("Box cancelled.");
             }
+            if (cancel && !DiscardConfirmed())
+            {
+                cancel = false;
+            }
             if (cancel)
             {
                 RequestClose();
                 return;
+            }
+            if (Settings.EditorPalette != ShownPalette)
+            {
+                ShownPalette = Settings.EditorPalette;
+                OverlayDirty = true; // the colours setting changed while the editor was open
             }
             PanFromInput();
             if (apply)
@@ -752,11 +788,11 @@ namespace EasyFloorPlanner
         }
 
         private static Color BrushColour(Brush b) => b.IsNew
-            ? (b.NewType == RoomType.Kitchen ? KitchenColour : DiningColour)
-            : b.Room.Type == RoomType.NoRoom ? new Color(1f, 0.35f, 0.3f) : RoomColour(b.Room, 1f);
+            ? (b.NewType == RoomType.Kitchen ? EditorColours.Kitchen : EditorColours.Dining)
+            : b.Room.Type == RoomType.NoRoom ? EditorColours.Erase : RoomColour(b.Room, 1f);
 
-        /// <summary>Largest box (tiles per side) Shift + drag paints in one go.</summary>
-        private const int MaxBoxSide = 40;
+        /// <summary>Largest box (tiles per side) Shift + drag paints in one go: the whole largest restaurant (was 40 until 2026-11-19).</summary>
+        internal const int MaxBoxSide = 2 * LayoutEdits.MaxExtent + 1;
 
         /// <summary>
         /// Shift + drag: paints every tile of the box between two corners with the current brush,
@@ -776,14 +812,7 @@ namespace EasyFloorPlanner
             LayoutBlueprint before = new LayoutBlueprint(Draft);
             Room room = brush.IsNew ? LayoutEdits.NewRoom(Draft, brush.NewType) : brush.Room;
 
-            var remaining = new List<LayoutPosition>();
-            for (int x = x0; x <= x1; x++)
-            {
-                for (int y = y0; y <= y1; y++)
-                {
-                    remaining.Add(new LayoutPosition(x, y));
-                }
-            }
+            List<LayoutPosition> remaining = BoxOrder(x0, x1, y0, y1, room);
             int total = remaining.Count;
             string lastRefusal = null;
             bool progress = true;
@@ -829,6 +858,78 @@ namespace EasyFloorPlanner
             {
                 ShowMessage($"Painted a {x1 - x0 + 1} x {y1 - y0 + 1} box.");
             }
+        }
+
+        /// <summary>
+        /// The box's tiles in the order PaintBox should try them: a tile can only join a room next
+        /// to it, so tiles are ordered by their distance (through the box) from the room's tiles,
+        /// and the passes in PaintBox mostly finish in one. Without an order, a box the size of the
+        /// largest restaurant took a pass per tile of distance (up to 127 passes of 16,000 tiles).
+        /// The list is reversed, because PaintBox walks it from the end.
+        /// </summary>
+        private List<LayoutPosition> BoxOrder(int x0, int x1, int y0, int y1, Room room)
+        {
+            int w = x1 - x0 + 1, h = y1 - y0 + 1;
+            var dist = new int[w, h];
+            var queue = new Queue<LayoutPosition>();
+            bool erase = room.Type == RoomType.NoRoom;
+            for (int x = 0; x < w; x++)
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    dist[x, y] = int.MaxValue;
+                    var p = new LayoutPosition(x0 + x, y0 + y);
+                    // Erasing: start from the outdoors. Painting: start next to the room's tiles.
+                    bool seed = erase
+                        ? TileOccupants.WithNeighbours(p).Any(n => !TileOccupants.IsIndoor(Draft, n))
+                        : TileOccupants.WithNeighbours(p).Any(n => Draft.Tiles.TryGetValue(n, out Room r) && r.ID == room.ID && r.Type == room.Type);
+                    if (seed)
+                    {
+                        dist[x, y] = 0;
+                        queue.Enqueue(p);
+                    }
+                }
+            }
+            if (queue.Count == 0)
+            {
+                // A new room (no tiles yet) starts next to the building.
+                for (int x = 0; x < w; x++)
+                {
+                    for (int y = 0; y < h; y++)
+                    {
+                        var p = new LayoutPosition(x0 + x, y0 + y);
+                        if (TileOccupants.WithNeighbours(p).Any(n => TileOccupants.IsIndoor(Draft, n)))
+                        {
+                            dist[x, y] = 0;
+                            queue.Enqueue(p);
+                        }
+                    }
+                }
+            }
+            while (queue.Count > 0)
+            {
+                LayoutPosition p = queue.Dequeue();
+                int d = dist[p.x - x0, p.y - y0];
+                foreach (LayoutPosition n in new[] { p + new LayoutPosition(1, 0), p + new LayoutPosition(-1, 0), p + new LayoutPosition(0, 1), p + new LayoutPosition(0, -1) })
+                {
+                    int nx = n.x - x0, ny = n.y - y0;
+                    if (nx >= 0 && ny >= 0 && nx < w && ny < h && dist[nx, ny] == int.MaxValue)
+                    {
+                        dist[nx, ny] = d + 1;
+                        queue.Enqueue(n);
+                    }
+                }
+            }
+            var tiles = new List<LayoutPosition>(w * h);
+            for (int x = 0; x < w; x++)
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    tiles.Add(new LayoutPosition(x0 + x, y0 + y));
+                }
+            }
+            // Farthest first, so walking from the end tries the nearest first.
+            return tiles.OrderByDescending(p => dist[p.x - x0, p.y - y0]).ToList();
         }
 
         private static (LayoutPosition, LayoutPosition) EdgeOf(LayoutPosition a, LayoutPosition b) =>
@@ -895,21 +996,78 @@ namespace EasyFloorPlanner
             }
             if (FloorPlanSerializer.Hash(Draft) == CommittedHash && DraftArea.SameAs(CommittedArea))
             {
+                if (Settings.ApplyKeepsOpen)
+                {
+                    ShowMessage($"Nothing to apply. {(UsesMouse ? "Esc" : "Back")} closes the editor.");
+                    return;
+                }
                 RequestClose(); // nothing to apply
                 return;
             }
             if (Unreachable.Count > 0)
             {
-                Refuse("some floor can't be reached from the front door (orange). Add a door", Unreachable.First());
+                Refuse($"some floor can't be reached from the front door ({EditorColours.UnreachableName.ToLowerInvariant()}). Add a door", Unreachable.First());
                 return;
             }
-            Enqueue(FloorPlanAction.Apply, Draft);
+            RememberTools(); // a plain Apply closes the editor from the host's side, without RequestClose
+            Enqueue(Settings.ApplyKeepsOpen ? FloorPlanAction.ApplyKeepOpen : FloorPlanAction.Apply, Draft);
             AwaitingSequence = Sequence;
             ShowMessage("Applying...");
         }
 
+        /// <summary>
+        /// Esc / Back: true to close. With changes that aren't applied, the first press only warns
+        /// (one key used to throw the whole draft away; user request 2026-11-19) and a second
+        /// press within a few seconds closes.
+        /// </summary>
+        private bool DiscardConfirmed()
+        {
+            if (!HasUnappliedChanges || Time.unscaledTime <= DiscardArmedUntil)
+            {
+                return true;
+            }
+            DiscardArmedUntil = Time.unscaledTime + DiscardWindow;
+            ShowMessage($"<color=#FFD820>You have changes that aren't applied. Press {(UsesMouse ? "Esc" : "Back")} again to discard them.</color>");
+            return false;
+        }
+
+        /// <summary>The "Remember mode and brush" setting: the editor opens with what it last closed with.</summary>
+        private void RestoreTools()
+        {
+            if (Spectating || !Settings.RememberTools)
+            {
+                return;
+            }
+            CurrentMode = RememberedMode;
+            EdgeBrushIndex = Mathf.Clamp(RememberedEdgeBrush, 0, EdgeBrushes.Length - 1);
+            if (RememberedBrush is (int roomId, RoomType roomType, RoomType newType, bool erase))
+            {
+                int i = erase ? Brushes.FindIndex(b => !b.IsNew && b.Room.Type == RoomType.NoRoom)
+                    : newType != RoomType.NoRoom ? Brushes.FindIndex(b => b.IsNew && b.NewType == newType)
+                    : Brushes.FindIndex(b => !b.IsNew && b.Room.ID == roomId && b.Room.Type == roomType);
+                if (i >= 0)
+                {
+                    BrushIndex = i;
+                }
+            }
+            OverlayDirty = true;
+        }
+
+        private void RememberTools()
+        {
+            if (Spectating || Brushes.Count == 0)
+            {
+                return;
+            }
+            RememberedMode = CurrentMode;
+            RememberedEdgeBrush = EdgeBrushIndex;
+            Brush b = Brushes[Mathf.Clamp(BrushIndex, 0, Brushes.Count - 1)];
+            RememberedBrush = (b.Room.ID, b.Room.Type, b.NewType, !b.IsNew && b.Room.Type == RoomType.NoRoom);
+        }
+
         private void RequestClose()
         {
+            RememberTools();
             ClosedLocally = true;
             CloseRequestedAt = Time.unscaledTime;
             Enqueue(CloseAction, null);
@@ -1074,7 +1232,7 @@ namespace EasyFloorPlanner
                 CursorBars.Add(NewImage(OverlayRect, Color.white));
             }
             BuildHoloLayer();
-            FlashImage = NewImage(OverlayRect, new Color(1f, 0.15f, 0.1f, 0.6f));
+            FlashImage = NewImage(OverlayRect, EditorColours.Flash);
             BoxImage = NewImage(OverlayRect, new Color(1f, 1f, 1f, 0.3f));
             BoxImage.gameObject.SetActive(false);
             FlashImage.gameObject.SetActive(false);
@@ -1207,9 +1365,9 @@ namespace EasyFloorPlanner
 
         private Image TakeGhost(Color c, Vector2 centre, Vector2 size) => TakeFrom(GhostPool, ref GhostUsed, HoloRect, c, centre, size);
 
-        private static readonly Color HoloWall = new Color(0.92f, 0.94f, 1f);
-        private static readonly Color HoloHatch = new Color(1f, 0.62f, 0.12f);
-        private static readonly Color HoloDoor = new Color(0.25f, 0.95f, 0.4f);
+        private static Color HoloWall => EditorColours.HoloWall;
+        private static Color HoloHatch => EditorColours.HoloHatch;
+        private static Color HoloDoor => EditorColours.HoloDoor;
 
         /// <summary>
         /// A floor-plan symbol for the wall between <paramref name="a"/> and <paramref name="b"/>,
@@ -1321,7 +1479,7 @@ namespace EasyFloorPlanner
             PoolUsed = 0;
 
             // Tiles: room tint; stronger where the draft differs; red where floor is removed;
-            // orange where it can't be reached from the front door.
+            // orange (white in the colourblind palette) where it can't be reached from the front door.
             foreach (KeyValuePair<LayoutPosition, Room> t in Draft.Tiles)
             {
                 if (!LayoutHelpers.IsInside(t.Value))
@@ -1329,35 +1487,36 @@ namespace EasyFloorPlanner
                     continue;
                 }
                 bool changed = !Committed.Tiles.TryGetValue(t.Key, out Room was) || !LayoutHelpers.IsInside(was) || was.ID != t.Value.ID;
-                Color c = Unreachable.Contains(t.Key) ? new Color(1f, 0.55f, 0.05f, 0.55f) : RoomColour(t.Value, changed ? 0.5f : 0.16f);
+                Color c = Unreachable.Contains(t.Key) ? WithAlpha(EditorColours.Unreachable, 0.55f) : RoomColour(t.Value, changed ? 0.5f : 0.16f);
                 Take(c, new Vector2(t.Key.x, t.Key.y), new Vector2(0.94f, 0.94f));
             }
             foreach (KeyValuePair<LayoutPosition, Room> t in Committed.Tiles)
             {
                 if (LayoutHelpers.IsInside(t.Value) && !(Draft.Tiles.TryGetValue(t.Key, out Room now) && LayoutHelpers.IsInside(now)))
                 {
-                    Take(new Color(0.9f, 0.1f, 0.1f, 0.45f), new Vector2(t.Key.x, t.Key.y), new Vector2(0.94f, 0.94f));
+                    Take(WithAlpha(EditorColours.Removed, 0.45f), new Vector2(t.Key.x, t.Key.y), new Vector2(0.94f, 0.94f));
                     if (Occupants.TryGetValue(t.Key, out OccupantFlags f) && (f & OccupantFlags.Binned) != 0)
                     {
                         // An appliance that will be thrown away: a yellow square inside the red.
-                        Take(new Color(1f, 0.85f, 0.1f, 0.85f), new Vector2(t.Key.x, t.Key.y), new Vector2(0.45f, 0.45f));
+                        Take(WithAlpha(EditorColours.Binned, 0.85f), new Vector2(t.Key.x, t.Key.y), new Vector2(0.45f, 0.45f));
                     }
                 }
             }
 
-            // Plain hatches and doors in the draft; brighter where they differ from the committed layout.
-            foreach (Feature f in Draft.Features.Where(f => f.Type == FeatureType.Hatch || f.Type == FeatureType.Door))
+            // Hatches and doors (and the front door) in the draft; brighter where they differ from the committed layout.
+            foreach (Feature f in Draft.Features.Where(f => IsShownEdge(f.Type)))
             {
                 bool isNew = !Committed.Features.Any(c => c.Type == f.Type && SameEdge(c, f.Tile1, f.Tile2));
-                Color c = f.Type == FeatureType.Door ? new Color(0.2f, 0.85f, 0.3f, isNew ? 0.95f : 0.45f) : new Color(1f, 0.6f, 0.1f, isNew ? 0.95f : 0.45f);
+                float a = isNew ? 0.95f : 0.45f;
+                Color c = WithAlpha(EditorColours.Edge(f.Type), a);
                 EdgeBar(f.Tile1, f.Tile2, c, 0.16f);
             }
             // Walls that the draft removed a hatch or door from (back to a plain wall).
-            foreach (Feature f in Committed.Features.Where(f => f.Type == FeatureType.Hatch || f.Type == FeatureType.Door))
+            foreach (Feature f in Committed.Features.Where(f => IsShownEdge(f.Type)))
             {
                 if (!Draft.Features.Any(d => SameEdge(d, f.Tile1, f.Tile2)) && IsWall(Draft, f.Tile1, f.Tile2))
                 {
-                    EdgeBar(f.Tile1, f.Tile2, new Color(0.85f, 0.85f, 0.85f, 0.95f), 0.16f);
+                    EdgeBar(f.Tile1, f.Tile2, WithAlpha(EditorColours.Wall, 0.95f), 0.16f);
                 }
             }
 
@@ -1378,14 +1537,14 @@ namespace EasyFloorPlanner
                 return;
             }
             HoloUsed = 0;
-            foreach (Feature f in Draft.Features.Where(f => f.Type == FeatureType.Hatch || f.Type == FeatureType.Door))
+            foreach (Feature f in Draft.Features.Where(f => IsShownEdge(f.Type)))
             {
                 if (!Committed.Features.Any(c => c.Type == f.Type && SameEdge(c, f.Tile1, f.Tile2)))
                 {
                     DrawEdgeSymbol(TakeHolo, f.Tile1, f.Tile2, f.Type, 0.95f);
                 }
             }
-            foreach (Feature f in Committed.Features.Where(f => f.Type == FeatureType.Hatch || f.Type == FeatureType.Door))
+            foreach (Feature f in Committed.Features.Where(f => IsShownEdge(f.Type)))
             {
                 if (!Draft.Features.Any(d => SameEdge(d, f.Tile1, f.Tile2)) && IsWall(Draft, f.Tile1, f.Tile2))
                 {
@@ -1519,12 +1678,12 @@ namespace EasyFloorPlanner
             }
             // A spectator sees the editor's cursor in the editor's player colour.
             // In wall mode the editor's cursor bar shows the wall brush's colour (wall, hatch, door).
-            Color edgeColour = EdgeBrushes[EdgeBrushIndex].Colour;
+            Color edgeColour = EditorColours.Edge(EdgeBrushes[EdgeBrushIndex].Type);
             Color c = Spectating ? new Color(EditorColour.r, EditorColour.g, EditorColour.b, pulse)
                 : CurrentMode == Mode.Walls ? new Color(edgeColour.r, edgeColour.g, edgeColour.b, pulse)
                 : CurrentMode == Mode.Camera ? new Color(CameraColour.r, CameraColour.g, CameraColour.b, pulse)
-                : blocked ? new Color(1f, 0.25f, 0.2f, pulse)
-                : binning ? new Color(1f, 0.85f, 0.1f, pulse) : new Color(1f, 1f, 1f, pulse);
+                : blocked ? WithAlpha(EditorColours.Blocked, pulse)
+                : binning ? WithAlpha(EditorColours.Binned, pulse) : new Color(1f, 1f, 1f, pulse);
             var p = new Vector2(CursorTile.x, CursorTile.y);
             if (CurrentMode != Mode.Walls)
             {
@@ -1546,6 +1705,7 @@ namespace EasyFloorPlanner
 
             bool flashing = FlashTile.HasValue && Time.unscaledTime < FlashUntil;
             FlashImage.gameObject.SetActive(flashing);
+            FlashImage.color = EditorColours.Flash;
             if (flashing)
             {
                 FlashImage.rectTransform.anchoredPosition = new Vector2(FlashTile.Value.x, FlashTile.Value.y);
@@ -1562,13 +1722,29 @@ namespace EasyFloorPlanner
             img.rectTransform.sizeDelta = size;
         }
 
+        /// <summary>The HUD's two lines of controls for a mode and input kind.</summary>
+        private static string HelpText(Mode mode, bool mouse)
+        {
+            return mouse
+                ? (mode == Mode.Tiles
+                    ? "Left click/drag: paint   Shift+drag: box   Right click: pick room   Q/E or wheel: change brush   Tab: walls\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel"
+                    : mode == Mode.Walls
+                    ? "Left click/drag walls: set to brush   Right click: pick from a wall   Q/E or wheel: wall / hatch / door / front door   Tab: camera area\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel"
+                    : "Left drag: draw the area the day camera frames   Right click: whole restaurant   Tab: floor\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel")
+                : (mode == Mode.Tiles
+                    ? "Interact (hold): paint   Grab: pick room   Secondary 1: change brush   Secondary 2: walls\nStick: move view (cursor at centre)   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel"
+                    : mode == Mode.Walls
+                    ? "Interact (hold): set the wall nearest the centre   Grab: pick from a wall   Secondary 1: wall / hatch / door / front door   Secondary 2: camera area\nStick: move view   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel"
+                    : "Hold Interact and move the view: draw the area the day camera frames   Grab: whole restaurant   Secondary 2: floor\nStick: move view   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel");
+        }
+
         private void UpdateHud()
         {
             if (HudTitle == null)
             {
                 return;
             }
-            Color brushColour = CurrentMode == Mode.Walls ? EdgeBrushes[EdgeBrushIndex].Colour
+            Color brushColour = CurrentMode == Mode.Walls ? EditorColours.Edge(EdgeBrushes[EdgeBrushIndex].Type)
                 : CurrentMode == Mode.Camera ? CameraColour
                 : BrushColour(Brushes[BrushIndex]);
             string colour = ColorUtility.ToHtmlStringRGB(brushColour);
@@ -1577,26 +1753,25 @@ namespace EasyFloorPlanner
             // Plain dashes: the game's font has no "|" or bullet glyphs (they render as "Y").
             string label = CurrentMode == Mode.Camera ? "" : "Brush: ";
             HudTitle.text = $"FLOOR PLAN   -   {mode}   -   {label}<color=#{colour}>{CurrentBrushLabel}</color>{watchers}";
-            HudHelp.text = UsesMouse
-                ? (CurrentMode == Mode.Tiles
-                    ? "Left click/drag: paint   Shift+drag: box   Right click: pick room   Q/E or wheel: change brush   Tab: walls\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel"
-                    : CurrentMode == Mode.Walls
-                    ? "Left click/drag walls: set to brush   Right click: pick from a wall   Q/E or wheel: wall / hatch / door   Tab: camera area\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel"
-                    : "Left drag: draw the area the day camera frames   Right click: whole restaurant   Tab: floor\nWASD: move view   Ctrl+wheel: zoom   Ctrl+Z: undo   Enter: apply   Esc: cancel")
-                : (CurrentMode == Mode.Tiles
-                    ? "Interact (hold): paint   Grab: pick room   Secondary 1: change brush   Secondary 2: walls\nStick: move view (cursor at centre)   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel"
-                    : CurrentMode == Mode.Walls
-                    ? "Interact (hold): set the wall nearest the centre   Grab: pick from a wall   Secondary 1: wall / hatch / door   Secondary 2: camera area\nStick: move view   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel"
-                    : "Hold Interact and move the view: draw the area the day camera frames   Grab: whole restaurant   Secondary 2: floor\nStick: move view   RB + right stick: zoom   Stop: undo   Select: apply   Back: cancel");
+            HudHelp.text = HelpText(CurrentMode, UsesMouse);
 
             string status;
-            if (Time.unscaledTime < MessageUntil)
+            if (BoxStart.HasValue && CurrentMode != Mode.Walls)
+            {
+                // The box being drawn (Shift + drag, or the camera area).
+                int w = Mathf.Abs(BoxEnd.x - BoxStart.Value.x) + 1, h = Mathf.Abs(BoxEnd.y - BoxStart.Value.y) + 1;
+                bool tooBig = CurrentMode == Mode.Tiles && (w > MaxBoxSide || h > MaxBoxSide);
+                status = tooBig
+                    ? $"<color=#FFD820>Box: {w} x {h} tiles, too big (at most {MaxBoxSide} x {MaxBoxSide}).</color>"
+                    : $"{(CurrentMode == Mode.Camera ? "Camera area" : "Box")}: {w} x {h} tiles. Let go to {(CurrentMode == Mode.Camera ? "set it" : "paint it")}; {(UsesMouse ? "Esc" : "Back")} cancels.";
+            }
+            else if (Time.unscaledTime < MessageUntil)
             {
                 status = Message;
             }
             else if (Unreachable.Count > 0)
             {
-                status = "<color=#FFA040>Orange floor can't be reached from the front door. Add a door before applying.</color>";
+                status = $"<color=#{EditorColours.UnreachableHex}>{EditorColours.UnreachableName} floor can't be reached from the front door. Add a door before applying.</color>";
             }
             else
             {
@@ -1604,7 +1779,7 @@ namespace EasyFloorPlanner
                 status = summary == null ? "No changes yet." : summary + " Enter/Select to apply.";
                 if (BinnedCount > 0)
                 {
-                    status += $"\n<color=#FFD820>{BinnedWarning}</color>";
+                    status += $"\n<color=#{EditorColours.BinnedHex}>{BinnedWarning}</color>";
                 }
             }
             HudStatus.text = status;
@@ -1612,8 +1787,8 @@ namespace EasyFloorPlanner
 
         /// <summary>The warning for appliances left on removed floor (vanilla bins anything outdoors at the start of the day).</summary>
         private string BinnedWarning => BinnedCount == 1
-            ? "The appliance on removed floor (yellow) will be thrown away at the start of the day unless you move it back inside."
-            : $"{BinnedCount} appliances on removed floor (yellow) will be thrown away at the start of the day unless you move them back inside.";
+            ? $"The appliance on removed floor ({EditorColours.BinnedName}) will be thrown away at the start of the day unless you move it back inside."
+            : $"{BinnedCount} appliances on removed floor ({EditorColours.BinnedName}) will be thrown away at the start of the day unless you move them back inside.";
 
         private static string ModeName(Mode m) => m == Mode.Tiles ? "Paint floor" : m == Mode.Walls ? "Walls, hatches & doors" : "Camera area";
 
@@ -1653,7 +1828,7 @@ namespace EasyFloorPlanner
                            + $"\nOnly {who} can change the layout. Press the terminal again when they finish to edit it yourself.";
             string summary = DraftSummary();
             HudStatus.text = Unreachable.Count > 0
-                ? "<color=#FFA040>Orange floor can't be reached from the front door yet.</color>"
+                ? $"<color=#{EditorColours.UnreachableHex}>{EditorColours.UnreachableName} floor can't be reached from the front door yet.</color>"
                 : summary ?? "No changes yet.";
         }
 
@@ -1808,6 +1983,40 @@ namespace EasyFloorPlanner
             RebuildOverlay();
         }
 
+        internal bool TestHasUnapplied => HasUnappliedChanges;
+        internal string TestStatus => HudStatus != null ? HudStatus.text : "";
+        internal string TestHelp => HudHelp != null ? HudHelp.text : "";
+        internal int TestMode => (int)CurrentMode;
+        internal string TestBrushLabel => CurrentBrushLabel;
+        internal Color TestOverlayColourOf(LayoutPosition tile) => Unreachable.Contains(tile) ? EditorColours.Unreachable : Draft.Tiles.TryGetValue(tile, out Room r) ? RoomColour(r, 1f) : Color.clear;
+
+        /// <summary>Presses cancel (Esc / Back) once, as Tick does.</summary>
+        internal void TestCancel()
+        {
+            if (DiscardConfirmed())
+            {
+                RequestClose();
+            }
+        }
+
+        internal void TestSetMode(int mode) => CurrentMode = (Mode)mode;
+        internal void TestSetEdgeBrush(int index) => EdgeBrushIndex = index;
+        internal static string TestHelpFor(bool walls, bool mouse) => HelpText(walls ? Mode.Walls : Mode.Tiles, mouse);
+
+        /// <summary>Starts a box drag at <paramref name="a"/> with the far corner at <paramref name="b"/> (not released).</summary>
+        internal void TestDragBox(LayoutPosition a, LayoutPosition b)
+        {
+            BoxStart = a;
+            BoxEnd = b;
+            UpdateHud();
+        }
+
+        internal void TestEndDrag()
+        {
+            BoxStart = null;
+            UpdateHud();
+        }
+
         internal void TestApply()
         {
             Message = "";
@@ -1850,12 +2059,11 @@ namespace EasyFloorPlanner
         }
 #endif
 
-        private static readonly Color KitchenColour = new Color(0.25f, 0.6f, 1f);
-        private static readonly Color DiningColour = new Color(1f, 0.75f, 0.25f);
+        private static Color WithAlpha(Color c, float a) => new Color(c.r, c.g, c.b, a);
 
         private static Color RoomColour(Room r, float alpha)
         {
-            Color baseColour = r.Type == RoomType.Kitchen ? KitchenColour : r.Type == RoomType.Dining ? DiningColour : new Color(0.75f, 0.5f, 1f);
+            Color baseColour = r.Type == RoomType.Kitchen ? EditorColours.Kitchen : r.Type == RoomType.Dining ? EditorColours.Dining : EditorColours.SideRoom;
             // Vary the shade per room so neighbouring rooms of the same type are distinguishable.
             float shade = 0.75f + 0.25f * (((r.ID % 7) + 7) % 7) / 6f;
             Color c = baseColour * shade;
@@ -1866,9 +2074,14 @@ namespace EasyFloorPlanner
         private static bool SameEdge(Feature f, LayoutPosition a, LayoutPosition b) =>
             (f.Tile1.Equals(a) && f.Tile2.Equals(b)) || (f.Tile1.Equals(b) && f.Tile2.Equals(a));
 
+        /// <summary>A wall between two rooms, or a wall on the outside of the building.</summary>
         private static bool IsWall(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b) =>
-            bp.Tiles.TryGetValue(a, out Room ra) && bp.Tiles.TryGetValue(b, out Room rb)
-            && LayoutHelpers.IsInside(ra) && LayoutHelpers.IsInside(rb) && ra.ID != rb.ID;
+            (bp.Tiles.TryGetValue(a, out Room ra) && bp.Tiles.TryGetValue(b, out Room rb)
+             && LayoutHelpers.IsInside(ra) && LayoutHelpers.IsInside(rb) && ra.ID != rb.ID)
+            || LayoutEdits.OuterEdge(bp, a, b).HasValue;
+
+        /// <summary>Edge features the editor draws: hatches, doors and the front door.</summary>
+        private static bool IsShownEdge(FeatureType t) => t == FeatureType.Hatch || t == FeatureType.Door || t == FeatureType.FrontDoor;
     }
 
     /// <summary>

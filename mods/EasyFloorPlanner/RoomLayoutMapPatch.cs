@@ -68,6 +68,7 @@ namespace EasyFloorPlanner
                 Shader.SetGlobalTexture("_RoomLayout", texture);
                 FarLighting.SetLayout(blueprint);
                 GroundExtender.SetLayout(blueprint);
+                WeatherTiler.SetLayout(blueprint);
                 PlayCamera.Install(); // a restaurant is being built on this machine: make sure the play camera runs
             }
             return texture;

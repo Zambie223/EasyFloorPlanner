@@ -97,8 +97,11 @@ namespace EasyFloorPlanner
                 {
                     SyncBoundsDependents(em, before, after);
                 }
-                // Every write, not only when the bounds change: this also repairs restaurants grown
+                // Every write, not only when the bounds change: a side or back door opens or closes
+                // the yard ring without changing the bounds, and this also repairs restaurants grown
                 // before the street sync existed.
+                YardRing.Refresh(bp);
+                LastBlockerSync = SyncMovementBlockers(em, before, after, YardRing.Active);
                 StreetPieces.Sync(em, bp);
             }
         }
@@ -180,7 +183,6 @@ namespace EasyFloorPlanner
                 ModMain.LogWarning($"Moved {moved} of 4 day-camera bound markers; the camera may not frame the new size exactly.");
             }
 
-            LastBlockerSync = SyncMovementBlockers(em, before, after);
         }
 
         /// <summary>Result of the last movement-blocker sync (removed, added), for logging and the self-test.</summary>
@@ -191,11 +193,29 @@ namespace EasyFloorPlanner
         /// these bounds. Countryside, Farm, Halloween, Street and Witch all use the same pattern: a
         /// row 3 tiles in front of the building, one tile past each side, plus two at each front
         /// corner. Together with vanilla's EnforcePlayerBounds they keep players near the restaurant.
+        /// With the yard ring (<paramref name="ring"/>, a side or back door) they instead form a
+        /// closed ring YardRing.Width + 1 tiles out all round, without the inner front-corner posts,
+        /// so the front strip opens onto the side yards.
         /// </summary>
-        public static HashSet<LayoutPosition> MovementBlockerPoints(Bounds b)
+        public static HashSet<LayoutPosition> MovementBlockerPoints(Bounds b, bool ring = false)
         {
             int minX = Mathf.RoundToInt(b.min.x), maxX = Mathf.RoundToInt(b.max.x), minZ = Mathf.RoundToInt(b.min.z);
             var points = new HashSet<LayoutPosition>();
+            if (ring)
+            {
+                int maxZ = Mathf.RoundToInt(b.max.z), r = YardRing.Width + 1;
+                for (int x = minX - r; x <= maxX + r; x++)
+                {
+                    points.Add(new LayoutPosition(x, minZ - 3));
+                    points.Add(new LayoutPosition(x, maxZ + r));
+                }
+                for (int z = minZ - 3; z <= maxZ + r; z++)
+                {
+                    points.Add(new LayoutPosition(minX - r, z));
+                    points.Add(new LayoutPosition(maxX + r, z));
+                }
+                return points;
+            }
             for (int x = minX - 1; x <= maxX + 1; x++)
             {
                 points.Add(new LayoutPosition(x, minZ - 3));
@@ -216,7 +236,7 @@ namespace EasyFloorPlanner
         /// aren't on the old pattern (another mod's) are left alone, and settings without blockers
         /// get none.
         /// </summary>
-        private static (int removed, int added) SyncMovementBlockers(EntityManager em, Bounds before, Bounds after)
+        private static (int removed, int added) SyncMovementBlockers(EntityManager em, Bounds before, Bounds after, bool ring)
         {
             int blockerId = KitchenData.AssetReference.OutdoorMovementBlocker;
             var existing = new Dictionary<LayoutPosition, List<Entity>>();
@@ -239,12 +259,14 @@ namespace EasyFloorPlanner
             }
             q.Dispose();
 
+            // Ours are on either pattern for the old bounds (with or without the ring).
             HashSet<LayoutPosition> oldPattern = MovementBlockerPoints(before);
+            oldPattern.UnionWith(MovementBlockerPoints(before, true));
             if (!existing.Keys.Any(oldPattern.Contains))
             {
                 return (0, 0); // this setting has no blockers (or they're not where vanilla puts them)
             }
-            HashSet<LayoutPosition> newPattern = MovementBlockerPoints(after);
+            HashSet<LayoutPosition> newPattern = MovementBlockerPoints(after, ring);
 
             int removed = 0, added = 0;
             foreach (KeyValuePair<LayoutPosition, List<Entity>> kv in existing)

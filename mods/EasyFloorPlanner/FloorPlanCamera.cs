@@ -90,7 +90,7 @@ namespace EasyFloorPlanner
                 up = Flat(cam.transform.up, Vector3.forward);
             }
             Vector2 v = Vector2.ClampMagnitude(input, 1f);
-            Move((right * v.x + up * v.y) * (PanSpeed * deltaTime));
+            Move((right * v.x + up * v.y) * (PanSpeed * (Settings.PanSpeed / 100f) * deltaTime));
         }
 
         /// <summary>Moves the view by a world offset (clamped to the editable area plus a margin).</summary>
@@ -105,15 +105,6 @@ namespace EasyFloorPlanner
             p.x = Mathf.Clamp(p.x, -limit, limit);
             p.z = Mathf.Clamp(p.z, -limit, limit);
             AnchorRoot.transform.position = p;
-        }
-
-        /// <summary>Self-test: centres the view on a world point (clamped like <see cref="Move"/>).</summary>
-        internal static void TestMoveTo(Vector3 point)
-        {
-            if (AnchorRoot != null)
-            {
-                Move(point - AnchorRoot.transform.position);
-            }
         }
 
         /// <summary>Call every Update and LateUpdate while active: keeps our targets in the group.</summary>
@@ -268,6 +259,7 @@ namespace EasyFloorPlanner
         internal static bool TestOursApplied => Active && Group.m_Targets == Ours;
         internal static float TestPitch => Vcam != null ? Vcam.rotation.eulerAngles.x : (Camera.main != null ? Camera.main.transform.rotation.eulerAngles.x : -1f);
         internal static bool TestTiltDone => Vcam == null;
+        internal static Vector3 TestAnchor => AnchorRoot != null ? AnchorRoot.transform.position : Vector3.zero;
 #endif
     }
 }

@@ -8,9 +8,9 @@ using UnityEngine.Rendering;
 namespace EasyFloorPlanner
 {
     /// <summary>
-    /// Self-test instrument (Debug builds only): measures how the game's shaders read the
-    /// night-lighting map (_RoomLayout), to find a way to light floor beyond the 32 x 32 tiles the
-    /// map covers.
+    /// Self-test instrument (Debug builds only): renders the world top-down to measure the night
+    /// lighting (_RoomLayout) and the weather. Used by the far-lighting check and the rain
+    /// measurement. (It began as the 2026-11-13 investigation into how the shaders read the map.)
     ///
     /// A hidden orthographic camera looks straight down at tiles -Half..Half-1 and renders into a
     /// texture. Just before it renders (and only for it), the night fade is forced to full and
@@ -31,7 +31,6 @@ namespace EasyFloorPlanner
         private Texture Pattern;
         private Texture SavedLayout;
         private float SavedFade;
-        private readonly Dictionary<Renderer, MaterialPropertyBlock> SavedBlocks = new Dictionary<Renderer, MaterialPropertyBlock>();
 
         /// <summary>Force full night while this camera renders (off for the weather measurement).</summary>
         public bool ForceNight = true;
@@ -179,35 +178,6 @@ namespace EasyFloorPlanner
             return grid;
         }
 
-        /// <summary>Gives every renderer its own _RoomLayout through a property block (keeping its other block values).</summary>
-        public int OverridePerRenderer(Texture perRenderer)
-        {
-            SavedBlocks.Clear();
-            foreach (Renderer r in UnityEngine.Object.FindObjectsOfType<Renderer>())
-            {
-                var saved = new MaterialPropertyBlock();
-                r.GetPropertyBlock(saved);
-                SavedBlocks[r] = saved;
-                var block = new MaterialPropertyBlock();
-                r.GetPropertyBlock(block);
-                block.SetTexture(RoomLayoutId, perRenderer);
-                r.SetPropertyBlock(block);
-            }
-            return SavedBlocks.Count;
-        }
-
-        public void RestorePerRenderer()
-        {
-            foreach (KeyValuePair<Renderer, MaterialPropertyBlock> kv in SavedBlocks)
-            {
-                if (kv.Key != null)
-                {
-                    kv.Key.SetPropertyBlock(kv.Value.isEmpty ? null : kv.Value);
-                }
-            }
-            SavedBlocks.Clear();
-        }
-
         /// <summary>A 32 x 32 map in vanilla's encoding: indoor pixels (G = 0) where <paramref name="indoor"/> says so.</summary>
         public static Texture2D Pattern32(Func<int, int, bool> indoor, TextureWrapMode wrap)
         {
@@ -227,7 +197,6 @@ namespace EasyFloorPlanner
 
         public void Dispose()
         {
-            RestorePerRenderer();
             RenderPipelineManager.beginCameraRendering -= Begin;
             RenderPipelineManager.endCameraRendering -= End;
             if (Cam != null)

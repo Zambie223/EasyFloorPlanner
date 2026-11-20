@@ -177,7 +177,7 @@ namespace EasyFloorPlanner
             // A hatch or door isn't a wall a wall-mounted appliance can hang on.
             bool wallCheck = new[] { a, b }.Any(p => occupants.TryGetValue(p, out OccupantFlags f) && (f & OccupantFlags.WallMounted) != 0);
             LayoutBlueprint before = wallCheck ? new LayoutBlueprint(bp) : null;
-            string refused = SetEdgeUnchecked(bp, a, b, type);
+            string refused = SetEdgeUnchecked(bp, a, b, type, occupants);
             if (refused == null && wallCheck && TileOccupants.LostWall(before, bp, new[] { a, b }, occupants).HasValue)
             {
                 Restore(bp, before);
@@ -186,11 +186,21 @@ namespace EasyFloorPlanner
             return refused;
         }
 
-        private static string SetEdgeUnchecked(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b, FeatureType? type)
+        private static string SetEdgeUnchecked(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b, FeatureType? type,
+                                               IReadOnlyDictionary<LayoutPosition, OccupantFlags> occupants)
         {
+            if (type == FeatureType.FrontDoor)
+            {
+                return MoveFrontDoor(bp, a, b, occupants);
+            }
             if (type.HasValue && !IsPlain(type.Value))
             {
                 return "only walls, hatches and doors can be placed";
+            }
+            (LayoutPosition inside, LayoutPosition outside)? outer = OuterEdge(bp, a, b);
+            if (outer.HasValue)
+            {
+                return SetOuterEdge(bp, outer.Value.inside, outer.Value.outside, type);
             }
             string notAWall = EdgeProblem(bp, a, b);
             if (notAWall != null)
@@ -227,6 +237,12 @@ namespace EasyFloorPlanner
         public static string ReadEdge(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b, out FeatureType? type)
         {
             type = null;
+            (LayoutPosition inside, LayoutPosition outside)? outer = OuterEdge(bp, a, b);
+            if (outer.HasValue)
+            {
+                type = FeatureAt(bp, outer.Value.inside, outer.Value.outside)?.Type;
+                return type.HasValue && !IsPlain(type.Value) && type != FeatureType.FrontDoor ? $"that's the {type}, which can't be changed" : null;
+            }
             string notAWall = EdgeProblem(bp, a, b);
             if (notAWall != null)
             {
@@ -253,7 +269,7 @@ namespace EasyFloorPlanner
             if (!bp.Tiles.TryGetValue(a, out Room ra) || !bp.Tiles.TryGetValue(b, out Room rb)
                 || !LayoutHelpers.IsInside(ra) || !LayoutHelpers.IsInside(rb))
             {
-                return "hatches and doors only go between two indoor rooms (not to the outside yet)";
+                return "there's no wall here";
             }
             if (ra.ID == rb.ID)
             {
@@ -317,7 +333,7 @@ namespace EasyFloorPlanner
             // tile couldn't go (it has a door). User report, 2026-11-13.
             if (bp.GetFeatures(target).Any(f => !IsPlain(f.Type)))
             {
-                return "that tile has a special door (like the front door) that can't be moved";
+                return "that tile has a special door (the front door can be moved with the Front door brush in wall mode)";
             }
             occupants.TryGetValue(target, out OccupantFlags here);
             string occupied = TileOccupants.Refusal(indoor, !erase, here);
@@ -353,10 +369,10 @@ namespace EasyFloorPlanner
             }
 
             bp[target] = brush;
-            // Plain hatches and doors only belong between two different indoor rooms.
-            bp.Features.RemoveAll(f => (f.Tile1 == target || f.Tile2 == target)
-                                       && (f.Type == FeatureType.Hatch || f.Type == FeatureType.Door)
-                                       && !IsInternalWall(bp, f.Tile1, f.Tile2));
+            // Plain hatches and doors only belong between two different indoor rooms, or (doors)
+            // on a side or back outer wall. Growing onto a door's outside tile can make it neither.
+            int row = FrontRow(bp);
+            bp.Features.RemoveAll(f => (f.Tile1 == target || f.Tile2 == target) && IsPlain(f.Type) && !IsLegalPlain(bp, f, row));
             return null;
         }
 
@@ -379,24 +395,57 @@ namespace EasyFloorPlanner
         /// </summary>
         public static string ValidateDraft(LayoutBlueprint before, LayoutBlueprint after, IReadOnlyDictionary<LayoutPosition, OccupantFlags> occupants)
         {
-            // Special features (front door, garage, greenhouse... anything but plain doors and
-            // hatches) can't be added, removed or moved.
-            var specialBefore = new HashSet<string>(before.Features.Where(f => !IsPlain(f.Type)).Select(EdgeKey));
-            var specialAfter = new HashSet<string>(after.Features.Where(f => !IsPlain(f.Type)).Select(EdgeKey));
+            // Special features (garage, greenhouse... anything but plain doors and hatches) can't be
+            // added, removed or moved. The front door may move along the front wall (2026-11-19).
+            var specialBefore = new HashSet<string>(before.Features.Where(f => !IsPlain(f.Type) && f.Type != FeatureType.FrontDoor).Select(EdgeKey));
+            var specialAfter = new HashSet<string>(after.Features.Where(f => !IsPlain(f.Type) && f.Type != FeatureType.FrontDoor).Select(EdgeKey));
             if (!specialBefore.SetEquals(specialAfter))
             {
-                return "special doors (like the front door) can't be changed";
+                return "special doors (like a garage door) can't be changed";
+            }
+            int frontRow = FrontRow(before);
+            Feature frontBefore = before.Features.FirstOrDefault(f => f.Type == FeatureType.FrontDoor);
+            List<Feature> frontsAfter = after.Features.Where(f => f.Type == FeatureType.FrontDoor).ToList();
+            bool frontMoved = false;
+            if (frontBefore != null)
+            {
+                if (frontsAfter.Count != 1)
+                {
+                    return "the restaurant needs exactly one front door";
+                }
+                Feature frontAfter = frontsAfter[0];
+                frontMoved = EdgeKey(frontAfter) != EdgeKey(frontBefore);
+                if (frontMoved)
+                {
+                    (LayoutPosition inside, LayoutPosition outside)? edge = OuterEdge(after, frontAfter.Tile1, frontAfter.Tile2);
+                    if (!edge.HasValue || !IsFrontWall(frontRow, edge.Value.inside, edge.Value.outside) || after[edge.Value.inside].Type == RoomType.Garden)
+                    {
+                        return "the front door must be on the front wall (the street side)";
+                    }
+                    if (occupants.TryGetValue(edge.Value.inside, out OccupantFlags f) && f != OccupantFlags.None)
+                    {
+                        return $"nothing can stand just inside the front door {Fmt(edge.Value.inside)}";
+                    }
+                }
+            }
+            else if (frontsAfter.Count != 0)
+            {
+                return "a front door can't be added";
             }
             foreach (Feature f in after.Features.Where(f => IsPlain(f.Type)))
             {
-                if (!IsInternalWall(after, f.Tile1, f.Tile2))
+                if (!IsLegalPlain(after, f, frontRow))
                 {
-                    return $"the {f.Type.ToString().ToLowerInvariant()} at {Fmt(f.Tile1)} isn't between two rooms";
+                    return f.Type == FeatureType.Door
+                        ? $"the door at {Fmt(f.Tile1)} must be between two rooms, or on a side or back outer wall"
+                        : $"the hatch at {Fmt(f.Tile1)} isn't between two rooms";
                 }
             }
 
-            var protectedTiles = new HashSet<LayoutPosition>(before.Features.Where(f => !IsPlain(f.Type)).SelectMany(f => new[] { f.Tile1, f.Tile2 }));
-            int frontRow = FrontRow(before);
+            // Tiles under special doors can't change. The front door's old spot can if it moved.
+            var protectedTiles = new HashSet<LayoutPosition>(before.Features
+                .Where(f => !IsPlain(f.Type) && !(frontMoved && f.Type == FeatureType.FrontDoor))
+                .SelectMany(f => new[] { f.Tile1, f.Tile2 }));
             foreach (LayoutPosition p in before.Tiles.Keys.Union(after.Tiles.Keys))
             {
                 bool hadB = before.Tiles.TryGetValue(p, out Room b);
@@ -459,6 +508,128 @@ namespace EasyFloorPlanner
 
         private static bool IsPlain(FeatureType t) => t == FeatureType.Hatch || t == FeatureType.Door;
 
+        // ------------------------------------------------------------------ outside doors and the front door
+
+        /// <summary>
+        /// The inside and outside tiles of an edge on the building's outer wall: one side an indoor
+        /// tile, the other open ground (not stored, or stored as NoRoom). Null for any other edge.
+        /// </summary>
+        public static (LayoutPosition inside, LayoutPosition outside)? OuterEdge(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b)
+        {
+            if (Math.Abs(a.x - b.x) + Math.Abs(a.y - b.y) != 1)
+            {
+                return null;
+            }
+            bool ia = bp.Tiles.TryGetValue(a, out Room ra) && LayoutHelpers.IsInside(ra);
+            bool ib = bp.Tiles.TryGetValue(b, out Room rb) && LayoutHelpers.IsInside(rb);
+            if (ia == ib)
+            {
+                return null;
+            }
+            LayoutPosition inside = ia ? a : b, outside = ia ? b : a;
+            if (bp.Tiles.TryGetValue(outside, out Room ro) && ro.Type != RoomType.NoRoom)
+            {
+                return null; // a garden or other non-room tile, not open ground
+            }
+            return (inside, outside);
+        }
+
+        /// <summary>An edge of the front wall: the outside tile is right in front of (south of) a front-row tile.</summary>
+        public static bool IsFrontWall(int frontRow, LayoutPosition inside, LayoutPosition outside) =>
+            inside.y == frontRow && outside.x == inside.x && outside.y == inside.y - 1;
+
+        /// <summary>
+        /// A plain door on a side or back outer wall (added 2026-11-19). Not on the front wall: that
+        /// side has the front door, the queue and the setting's front decorations.
+        /// </summary>
+        public static bool IsLegalOuterDoor(LayoutBlueprint bp, Feature f, int frontRow)
+        {
+            if (f.Type != FeatureType.Door)
+            {
+                return false;
+            }
+            (LayoutPosition inside, LayoutPosition outside)? edge = OuterEdge(bp, f.Tile1, f.Tile2);
+            return edge.HasValue && bp[edge.Value.inside].Type != RoomType.Garden && !IsFrontWall(frontRow, edge.Value.inside, edge.Value.outside);
+        }
+
+        private static bool IsLegalPlain(LayoutBlueprint bp, Feature f, int frontRow) =>
+            IsInternalWall(bp, f.Tile1, f.Tile2) || (f.Type == FeatureType.Door && IsLegalOuterDoor(bp, f, frontRow));
+
+        private static Feature FeatureAt(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b) =>
+            bp.Features.FirstOrDefault(f => (f.Tile1 == a && f.Tile2 == b) || (f.Tile1 == b && f.Tile2 == a));
+
+        /// <summary>Wall or door on an outer wall. Hatches don't go outside; the front door has its own brush.</summary>
+        private static string SetOuterEdge(LayoutBlueprint bp, LayoutPosition inside, LayoutPosition outside, FeatureType? type)
+        {
+            Feature existing = FeatureAt(bp, inside, outside);
+            if (existing != null && existing.Type == FeatureType.FrontDoor)
+            {
+                return "that's the front door: to move it, use the Front door brush on another spot of the front wall";
+            }
+            if (existing != null && !IsPlain(existing.Type))
+            {
+                return $"the {existing.Type} can't be changed";
+            }
+            if (type == null)
+            {
+                if (existing != null)
+                {
+                    bp.Features.Remove(existing);
+                }
+                return null;
+            }
+            if (type == FeatureType.Hatch)
+            {
+                return "hatches only go between two indoor rooms";
+            }
+            if (bp[inside].Type == RoomType.Garden)
+            {
+                return "garden tiles can't have doors";
+            }
+            if (IsFrontWall(FrontRow(bp), inside, outside))
+            {
+                return "the front wall only has the front door (use the Front door brush to move it)";
+            }
+            if (existing == null)
+            {
+                bp.Features.Add(new Feature(inside, outside, FeatureType.Door));
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// The Front door brush: moves the front door to this edge of the front wall. The old spot
+        /// becomes wall. Nothing may stand just inside the new spot (vanilla reserves that tile).
+        /// </summary>
+        private static string MoveFrontDoor(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b, IReadOnlyDictionary<LayoutPosition, OccupantFlags> occupants)
+        {
+            Feature current = bp.Features.FirstOrDefault(f => f.Type == FeatureType.FrontDoor);
+            if (current == null)
+            {
+                return "this restaurant has no front door to move";
+            }
+            (LayoutPosition inside, LayoutPosition outside)? edge = OuterEdge(bp, a, b);
+            if (!edge.HasValue || !IsFrontWall(FrontRow(bp), edge.Value.inside, edge.Value.outside))
+            {
+                return "the front door goes on the front wall (the street side)";
+            }
+            if (FeatureAt(bp, edge.Value.inside, edge.Value.outside) == current)
+            {
+                return null; // already there
+            }
+            if (bp[edge.Value.inside].Type == RoomType.Garden)
+            {
+                return "garden tiles can't have doors";
+            }
+            if (occupants.TryGetValue(edge.Value.inside, out OccupantFlags f) && f != OccupantFlags.None)
+            {
+                return "move the appliance off that tile first: nothing can stand just inside the front door";
+            }
+            bp.Features.Remove(current);
+            bp.Features.Add(new Feature(edge.Value.inside, edge.Value.outside, FeatureType.FrontDoor));
+            return null;
+        }
+
         private static bool IsInternalWall(LayoutBlueprint bp, LayoutPosition a, LayoutPosition b) =>
             Math.Abs(a.x - b.x) + Math.Abs(a.y - b.y) == 1
             && bp.Tiles.TryGetValue(a, out Room ra) && bp.Tiles.TryGetValue(b, out Room rb)
@@ -502,12 +673,28 @@ namespace EasyFloorPlanner
                 doors.Add((f.Tile1, f.Tile2));
                 doors.Add((f.Tile2, f.Tile1));
             }
+            // Tiles with a door to the outside (the front door among them) are connected through the
+            // outside: people walk round the building (the yard ring lets chefs, 2026-11-19).
+            var outsideDoorTiles = new HashSet<LayoutPosition>(bp.Features
+                .Where(f => f.Type.IsDoor())
+                .Select(f => OuterEdge(bp, f.Tile1, f.Tile2))
+                .Where(e => e.HasValue)
+                .Select(e => e.Value.inside));
+            bool outsideReached = false;
             var seen = new HashSet<LayoutPosition> { start };
             var queue = new Queue<LayoutPosition>();
             queue.Enqueue(start);
             while (queue.Count > 0)
             {
                 LayoutPosition p = queue.Dequeue();
+                if (!outsideReached && outsideDoorTiles.Contains(p))
+                {
+                    outsideReached = true;
+                    foreach (LayoutPosition o in outsideDoorTiles.Where(o => seen.Add(o)))
+                    {
+                        queue.Enqueue(o);
+                    }
+                }
                 foreach (LayoutPosition d in LayoutHelpers.Directions)
                 {
                     LayoutPosition n = p + d;

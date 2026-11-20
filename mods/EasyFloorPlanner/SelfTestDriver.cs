@@ -24,7 +24,7 @@ namespace EasyFloorPlanner
     /// State is static so it survives this system being recreated across scene changes.
     /// </summary>
     [AlwaysUpdateSystem]
-    public class SelfTestDriver : GenericSystemBase, IModSystem
+    public partial class SelfTestDriver : GenericSystemBase, IModSystem
     {
         private enum Stage { WaitHq, WaitKitchen, Settle, Steps, WaitReload, Done }
 
@@ -55,7 +55,14 @@ namespace EasyFloorPlanner
         // Far strip beyond vanilla's old navmesh edge, ordered from the building outward.
         private static List<(LayoutPosition src, LayoutPosition dst)> _far = new List<(LayoutPosition, LayoutPosition)>();
 
-        private const float StepGap = 3f;
+        // Pause after a step that changes something (edits, editor actions) so the game can catch up,
+        // and after a check (a step named ...Verify...), which changes nothing. Was a flat 3 s after
+        // every step (2026-11-19 review: about 6.5 of a run's 7.5 minutes). Steps that wait for
+        // something specific poll for it themselves (Retry).
+        private const float StepGap = 0.75f;
+        private const float CheckGap = 0.05f;
+        private static bool _lastStepWasCheck;
+        private static float _stepsStartedAt = -1f;
 
         protected override void OnUpdate()
         {
@@ -158,7 +165,7 @@ namespace EasyFloorPlanner
                     if (_stage == Stage.Steps)
                     {
                         // A step that switched stage (the reload) has set its own deadline.
-                        _waitUntil = now + StepGap;
+                        _waitUntil = now + (_lastStepWasCheck ? CheckGap : StepGap);
                     }
                     return;
 
@@ -218,6 +225,7 @@ namespace EasyFloorPlanner
             Action[] steps = SelfTest.Survey ? new Action[] { StepGroundSurvey } : new Action[]
             {
                 StepBaseline,
+                StepSettingsOptions,
                 StepGrow, StepVerifyGrow,
                 StepEdgePick, StepVerifyEdge,
                 StepEdgeCycle, StepVerifyEdge,
@@ -226,7 +234,7 @@ namespace EasyFloorPlanner
                 StepGrowFar, StepVerifyGrowFar,
                 StepShrinkFar, StepVerifyShrinkFar,
                 StepGrowWest, StepVerifyGrowWest, StepShrinkWest, StepVerifyShrinkWest,
-                StepGrowToLimit, StepVerifyGrowToLimit, StepLimitGround, StepLimitEditorOpen, StepLimitShotWest, StepLimitShotNorth, StepLimitEditorClose,
+                StepGrowToLimit, StepVerifyGrowToLimit, StepLimitGround,
                 StepShrinkFromLimit, StepVerifyShrinkFromLimit,
                 StepBulldozeScenery, StepVerifyBulldoze, StepShrinkBulldoze,
                 StepRefusals,
@@ -240,21 +248,26 @@ namespace EasyFloorPlanner
                 StepSpectateStop, StepSpectateVerifyStopped,
                 StepSpectateOpen, StepSpectateVerifyLateJoin,
                 StepEditApply, StepEditVerifyApplied,
-                StepLightingProbe,
+                StepUxOpen, StepUxReadouts, StepUxBigBox, StepUxPalette, StepUxApplyKeepOpen, StepUxVerifyKeptOpen,
+                StepUxRevert, StepUxVerifyReverted, StepUxVerifyDiscarded, StepUxVerifyRemembered, StepUxReopenDefault, StepUxVerifyDefault,
+                StepHostOnly,
                 StepGrowFarWest, StepVerifyFarLighting,
-                StepWeatherForce, StepRainMeasure, StepWeatherShot, StepWeatherOff,
+                StepWeatherForce, StepRainMeasure, StepWeatherShot, StepWeatherSetting, StepWeatherOff,
                 StepShrinkFarWest,
                 StepAreaKeptAfterResize,
                 StepAreaReopen, StepAreaVerifyReopened, StepAreaReset, StepAreaVerifyReset,
                 StepOccupiedSetup, StepOccupiedGrouped, StepOccupiedEdit, StepOccupiedVerify, StepOccupiedRestore, StepOccupiedVerifyRestored,
                 StepWallMountedSetup, StepWallMountedSpawned, StepWallMountedEdit, StepWallMountedVerify, StepWallMountedRestore, StepWallMountedVerifyRestored,
-                StepChairPathingSpread,
+                StepChairPathingSpread, StepSeatPathsCompare,
+                StepDoorsSetup, StepDoorsEdit, StepDoorsVerify, StepDoorsRestore, StepDoorsVerifyRestored,
                 StepPlayCamera, StepPlayCameraZoom, StepPlayCameraPan, StepPlayCameraFollow, StepPlayCameraReset,
+                StepZoomOutNormal, StepZoomOutFurthest, StepZoomOutClamped,
                 StepCameraOtherUiOpen, StepCameraOtherUiClosed,
                 StepCameraControlsPause, StepCameraControlsOpen, StepCameraControlsPages,
                 StepPrepareDayLayout, StepVerifyDayLayout,
                 StepSaveToMemory, StepVerifySaved,
                 StepReload, StepVerifyReload,
+                StepProfilerButton,
                 StepStartDay, StepWaitForDay,
                 StepWatchCustomers,
                 StepWatchIndicator,
@@ -270,7 +283,12 @@ namespace EasyFloorPlanner
                 if (_loggedStep != index)
                 {
                     _loggedStep = index;
-                    Log($"--- step {index}: {steps[index].Method.Name}");
+                    if (_stepsStartedAt < 0f)
+                    {
+                        _stepsStartedAt = UnityEngine.Time.realtimeSinceStartup;
+                    }
+                    Log($"--- step {index}: {steps[index].Method.Name} (t = {UnityEngine.Time.realtimeSinceStartup - _stepsStartedAt:0.0} s)");
+                    _lastStepWasCheck = steps[index].Method.Name.Contains("Verify");
                 }
                 steps[index]();
             }
@@ -290,6 +308,7 @@ namespace EasyFloorPlanner
             Check(LayoutWriter.IsAvailable, "GetReachability reflection resolved");
             Check(LayoutEdits.CheckConnectivity(_baseline) == null, "vanilla layout passes our connectivity rule");
             Check(LayoutViews().Length == 1, $"exactly one LayoutView before edits (found {LayoutViews().Length})");
+            Check(!PathfindingBudget.Raised, $"a vanilla-sized restaurant keeps the game's path budget ({UnityEngine.AI.NavMesh.pathfindingIterationsPerFrame} per frame)");
             // Validates our copy of the decorators' formulas against what vanilla placed: on a fresh
             // run the load check must have found nothing to change.
             (int removed, int added)? load = StreetPiecesLoadCheck.LastResult;
@@ -482,7 +501,7 @@ namespace EasyFloorPlanner
                 Log($"INFO {when}: this setting has no outdoor movement blockers.");
                 return;
             }
-            HashSet<LayoutPosition> expected = LayoutWriter.MovementBlockerPoints(b);
+            HashSet<LayoutPosition> expected = LayoutWriter.MovementBlockerPoints(b, YardRing.Active);
             var missing = expected.Where(p => !at.Contains(p)).ToList();
             int dupes = at.Count - at.Distinct().Count();
             var stray = at.Distinct().Where(p => !expected.Contains(p)).ToList();
@@ -1011,6 +1030,8 @@ namespace EasyFloorPlanner
                 return;
             }
             Log($"INFO navmesh rebuild for the full-size layout took {NavmeshRebuildTiming.LastMs:0} ms.");
+            Check(PathfindingBudget.Raised && NavMesh.pathfindingIterationsPerFrame >= PathfindingBudget.BigRestaurant,
+                $"the full-size restaurant raises the path budget ({NavMesh.pathfindingIterationsPerFrame} per frame)");
             Check(NavMesh.SamplePosition((Vector3)_limitWest, out NavMeshHit _, 0.3f, NavMesh.AllAreas), $"navmesh covers the far west tile {Fmt(_limitWest)}");
             Check(NavMesh.SamplePosition((Vector3)_limitNorth, out NavMeshHit _, 0.3f, NavMesh.AllAreas), $"navmesh covers the far north tile {Fmt(_limitNorth)}");
             Bounds b = CurrentBounds();
@@ -1088,84 +1109,6 @@ namespace EasyFloorPlanner
             }
         }
 
-        // Top-down editor views of both far ends (what a player sees out there), then close.
-        private static bool _limitCloseSent;
-
-        private void StepLimitEditorOpen()
-        {
-            if (!_haveLimit)
-            {
-                return;
-            }
-            List<Entity> players = AllWith<CPlayer>();
-            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
-            if (players.Count > 0 && service != null)
-            {
-                service.RequestOpen(players[0]);
-            }
-        }
-
-        private bool LimitEditorReady()
-        {
-            FloorPlanView view = FloorPlanView.TestInstance;
-            if ((view == null || !view.TestReady) && StepElapsed < 10f)
-            {
-                Retry(0.5f);
-                return false;
-            }
-            if (view == null || !view.TestReady)
-            {
-                Log("INFO the editor didn't open for the size-limit screenshots; skipped.");
-                return false;
-            }
-            view.TestSetVisible(true);
-            return true;
-        }
-
-        private void LimitShot(LayoutPosition at, string name)
-        {
-            if (!_haveLimit || !LimitEditorReady())
-            {
-                return;
-            }
-            FloorPlanCamera.TestMoveTo((Vector3)at);
-            if (StepElapsed < 2.5f)
-            {
-                Retry(0.25f);
-                return;
-            }
-            Camera cam = Camera.main;
-            Log($"INFO view of {Fmt(at)}: camera at {(cam != null ? cam.transform.position.ToString() : "none")}, far clip {(cam != null ? cam.farClipPlane : 0f):0}.");
-            Shot(name);
-        }
-
-        private void StepLimitShotWest() => LimitShot(_limitWest, "06d-limit-west");
-
-        private void StepLimitShotNorth() => LimitShot(_limitNorth, "06e-limit-north");
-
-        private void StepLimitEditorClose()
-        {
-            if (!_haveLimit)
-            {
-                return;
-            }
-            FloorPlanView view = FloorPlanView.TestInstance;
-            if (AllWith<CFloorPlanSession>().Count > 0)
-            {
-                if (!_limitCloseSent)
-                {
-                    _limitCloseSent = true;
-                    view?.TestStopWatching();
-                }
-                if (StepElapsed < 5f)
-                {
-                    Retry(0.25f);
-                    return;
-                }
-                Fail("the editor didn't close after the size-limit screenshots");
-            }
-        }
-
         private void StepShrinkFromLimit()
         {
             if (!_haveLimit)
@@ -1191,6 +1134,7 @@ namespace EasyFloorPlanner
             if (_haveLimit)
             {
                 Check(FloorPlanSerializer.Hash(ReadLayout()) == _limitHash, "after shrinking from the size limit the layout is as it was");
+                Check(!PathfindingBudget.Raised, $"back to vanilla size, the path budget is the game's again ({NavMesh.pathfindingIterationsPerFrame} per frame)");
                 CheckCameraMarkers(CurrentBounds(), "after shrinking from the size limit");
             }
         }
@@ -1512,7 +1456,8 @@ namespace EasyFloorPlanner
             {
                 return;
             }
-            // Move the front door by one tile in a copy of the draft: the host must refuse it.
+            // Move the front door off the front wall (one row in) in a copy of the draft: the host
+            // must refuse it. (Moving it along the front wall is allowed since 2026-11-19.)
             LayoutBlueprint bad = new LayoutBlueprint(_editExpected);
             Feature front = bad.Features.FirstOrDefault(f => f.Type == FeatureType.FrontDoor);
             if (front == null)
@@ -1522,9 +1467,9 @@ namespace EasyFloorPlanner
             }
             Shot("14-editor-draft"); // a step later than the edits, so the HUD's Update has refreshed
             bad.Features.Remove(front);
-            bad.Features.Add(new Feature(front.Tile1 + new LayoutPosition(1, 0), front.Tile2 + new LayoutPosition(1, 0), FeatureType.FrontDoor));
+            bad.Features.Add(new Feature(front.Tile1 + new LayoutPosition(0, 1), front.Tile2 + new LayoutPosition(0, 1), FeatureType.FrontDoor));
             view.TestSendRawDraft(bad);
-            Log("sent a tampered draft (front door moved) straight to the host.");
+            Log("sent a tampered draft (front door moved off the front wall) straight to the host.");
         }
 
         private void StepEditVerifyRejected()
@@ -1539,7 +1484,7 @@ namespace EasyFloorPlanner
                 Retry(0.5f);
                 return;
             }
-            Check(!view.TestAwaiting && view.TestMessage.Contains("special doors"), $"the host refused the tampered draft ({view.TestMessage})");
+            Check(!view.TestAwaiting && view.TestMessage.Contains("front wall"), $"the host refused the tampered draft ({view.TestMessage})");
             Check(AllWith<CFloorPlanSession>().Count == 1, "the session stays open after a refusal");
             Check(!SameLayout(ReadLayout(), _editExpected, out _) && ReadLayout().Features.Any(f => f.Type == FeatureType.FrontDoor), "the live layout is unchanged by the refused draft");
         }
@@ -2419,19 +2364,310 @@ namespace EasyFloorPlanner
             }
         }
 
+        // ---- doors: move the front door along the front wall, add a side door (2026-11-19) ----
+
+        private static LayoutPosition _doorOld, _doorNew, _sideIn, _sideDir;
+        private static int _doorsHash;
+        private static bool _doorsReady;
+
+        private Vector3 PracticeSpot(Vector3 door)
+        {
+            Vector3 outside = door - new Vector3(0f, 0f, 1f);
+            return outside + new Vector3((outside.x > 0f ? -1 : 1) * 4, 0f, 0f);
+        }
+
+        private Entity PracticeTrigger() => AllWith<CAppliance>().FirstOrDefault(e => EntityManager.GetComponentData<CAppliance>(e).ID == KitchenData.AssetReference.PracticeModeTrigger);
+
+        private bool WalkableFrom(Vector3 from, Vector3 to)
+        {
+            var path = new NavMeshPath();
+            return NavMesh.SamplePosition(from, out NavMeshHit a, 0.5f, NavMesh.AllAreas) && NavMesh.SamplePosition(to, out NavMeshHit b, 0.5f, NavMesh.AllAreas)
+                   && NavMesh.CalculatePath(a.position, b.position, NavMesh.AllAreas, path) && path.status == NavMeshPathStatus.PathComplete;
+        }
+
+        private void StepDoorsSetup()
+        {
+            LayoutBlueprint bp = ReadLayout();
+            LayoutPosition? door = FrontInside(bp);
+            if (!door.HasValue)
+            {
+                Log("INFO no front door; the door steps are skipped.");
+                return;
+            }
+            _doorOld = door.Value;
+            _doorsHash = FloorPlanSerializer.Hash(bp);
+            Dictionary<LayoutPosition, OccupantFlags> occupants = TileOccupants.Take(EntityManager);
+            bool Free(LayoutPosition p) => bp.Tiles.TryGetValue(p, out Room r) && LayoutHelpers.IsInside(r) && r.Type != RoomType.Garden
+                                           && !occupants.ContainsKey(p) && !bp.GetFeatures(p).Any();
+            // A new spot on the front row, 2 or more tiles from the door, with open ground in front.
+            LayoutPosition? spot = null;
+            for (int k = 2; k <= 6 && !spot.HasValue; k++)
+            {
+                foreach (int sign in new[] { 1, -1 })
+                {
+                    var c = new LayoutPosition(_doorOld.x + sign * k, _doorOld.y);
+                    if (Free(c) && !bp.Tiles.ContainsKey(c + new LayoutPosition(0, -1)))
+                    {
+                        spot = c;
+                        break;
+                    }
+                }
+            }
+            // A side wall tile (not the front row) people can reach, with open ground beside it.
+            LayoutPosition? side = null;
+            LayoutPosition sideDir = default;
+            foreach (KeyValuePair<LayoutPosition, Room> t in bp.Tiles.OrderBy(t => t.Key.y).ThenBy(t => t.Key.x))
+            {
+                if (side.HasValue || t.Key.y == _doorOld.y || !Free(t.Key))
+                {
+                    continue;
+                }
+                foreach (LayoutPosition d in new[] { new LayoutPosition(-1, 0), new LayoutPosition(1, 0) })
+                {
+                    if (!bp.Tiles.ContainsKey(t.Key + d) && WalkableFrom((Vector3)_doorOld, (Vector3)t.Key))
+                    {
+                        side = t.Key;
+                        sideDir = d;
+                        break;
+                    }
+                }
+            }
+            if (!spot.HasValue || !side.HasValue)
+            {
+                Log($"INFO no free front-row spot ({spot.HasValue}) or reachable side wall tile ({side.HasValue}); the door steps are skipped.");
+                return;
+            }
+            _doorNew = spot.Value;
+            _sideIn = side.Value;
+            _sideDir = sideDir;
+            Log($"doors: the front door moves {Fmt(_doorOld)} -> {Fmt(_doorNew)}; a side door goes on {Fmt(_sideIn)} facing {Fmt(_sideDir)}.");
+            List<Entity> players = AllWith<CPlayer>();
+            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
+            if (players.Count == 0 || service == null)
+            {
+                Fail("no player or FloorPlanService to open the editor with");
+                return;
+            }
+            service.RequestOpen(players[0]);
+            _doorsReady = true;
+        }
+
+        private bool DoorsEditorReady()
+        {
+            FloorPlanView view = FloorPlanView.TestInstance;
+            if ((view == null || !view.TestReady) && StepElapsed < 10f)
+            {
+                Retry(0.5f);
+                return false;
+            }
+            if (view == null || !view.TestReady)
+            {
+                Fail("the editor didn't open for the door steps");
+                _doorsReady = false;
+                return false;
+            }
+            view.TestSetVisible(true);
+            return true;
+        }
+
+        private void StepDoorsEdit()
+        {
+            if (!_doorsReady || !DoorsEditorReady())
+            {
+                return;
+            }
+            FloorPlanView view = FloorPlanView.TestInstance;
+            var south = new LayoutPosition(0, -1);
+            // Refusals first: a plain door on the front wall, a hatch to the outside.
+            int before = FloorPlanSerializer.Hash(view.TestDraft);
+            view.TestSetEdge(_doorNew, south, FeatureType.Door);
+            Check(FloorPlanSerializer.Hash(view.TestDraft) == before && view.TestMessage.Contains("front wall"),
+                $"a plain door on the front wall is refused ({view.TestMessage})");
+            view.TestSetEdge(_sideIn, _sideDir, FeatureType.Hatch);
+            Check(FloorPlanSerializer.Hash(view.TestDraft) == before && view.TestMessage.IndexOf("hatch", StringComparison.OrdinalIgnoreCase) >= 0,
+                $"a hatch to the outside is refused ({view.TestMessage})");
+
+            view.TestSetEdge(_doorNew, south, FeatureType.FrontDoor);
+            LayoutPosition? moved = FrontInside(view.TestDraft);
+            Check(moved.HasValue && moved.Value == _doorNew && view.TestDraft.Features.Count(f => f.Type == FeatureType.FrontDoor) == 1,
+                $"the Front door brush moves the front door to {Fmt(_doorNew)} ({view.TestMessage})");
+            view.TestSetEdge(_sideIn, _sideDir, FeatureType.Door);
+            Check(view.TestDraft.Features.Any(f => f.Type == FeatureType.Door && LayoutEdits.OuterEdge(view.TestDraft, f.Tile1, f.Tile2)?.inside == _sideIn),
+                $"a door on a side wall is allowed ({view.TestMessage})");
+            Check(LayoutEdits.Unreachable(view.TestDraft).Count == 0, "the draft with the moved front door and the side door has no cut-off floor");
+            view.TestApply();
+        }
+
+        private void StepDoorsVerify()
+        {
+            if (!_doorsReady)
+            {
+                return;
+            }
+            bool closed = AllWith<CFloorPlanSession>().Count == 0;
+            if (!closed && StepElapsed < 8f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            LayoutBlueprint live = ReadLayout();
+            Entity layout = GetSingletonEntity<SLayout>();
+            Vector3 door = live.GetFrontDoor();
+            if (_doorsPhase == 0)
+            {
+                DoorsLayoutChecks(closed, live, layout, door);
+            }
+
+            // A chef in the yard stays there; one past the yard is sent back to the front door.
+            Entity player = AllWith<CPlayer>().FirstOrDefault();
+            if (player != default)
+            {
+                if (_doorsPhase == 0)
+                {
+                    SetPlayer(player, (Vector3)(_sideIn + _sideDir));
+                    _doorsPhase = 1;
+                    Retry(0.6f);
+                    return;
+                }
+                if (_doorsPhase == 1)
+                {
+                    Vector3 p = Pos(player);
+                    Check((p - (Vector3)(_sideIn + _sideDir)).sqrMagnitude < 1.5f, $"a chef in the yard beside the side door isn't sent back ({p})");
+                    SetPlayer(player, (Vector3)_sideIn + (Vector3)_sideDir * (YardRing.Width + 4));
+                    _doorsPhase = 2;
+                    Retry(0.6f);
+                    return;
+                }
+                Vector3 q = Pos(player);
+                Check((new Vector3(q.x, 0f, q.z) - door).sqrMagnitude < 2.5f, $"a chef past the yard is sent back to the front door ({q})");
+                _doorsPhase = 0;
+            }
+            Shot("26-doors");
+            List<Entity> players = AllWith<CPlayer>();
+            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
+            if (players.Count > 0 && service != null)
+            {
+                service.RequestOpen(players[0]);
+            }
+        }
+
+        private void DoorsLayoutChecks(bool closed, LayoutBlueprint live, Entity layout, Vector3 door)
+        {
+            Check(closed, "the door edit was applied");
+            Check(FrontInside(live) == _doorNew, $"the front door is at {Fmt(_doorNew)}");
+            Check(HasComponent<CFrontDoorMarker>(layout) && (EntityManager.GetComponentData<CFrontDoorMarker>(layout).Location - door).sqrMagnitude < 0.01f,
+                "the game's front door marker follows the moved door");
+            Entity practice = PracticeTrigger();
+            if (practice != default)
+            {
+                Vector3 want = PracticeSpot(door);
+                Vector3 at = Pos(practice);
+                Check(Mathf.Abs(at.x - want.x) < 0.05f && Mathf.Abs(at.z - want.z) < 0.05f, $"the practice terminal moved beside the new door (at {at}, expected {want})");
+            }
+            Check(YardRing.Active, "a side door opens the yard ring");
+            CheckCameraMarkers(CurrentBounds(), "with a side door"); // includes the blocker ring and the front decorations
+            Vector3 outside = (Vector3)(_sideIn + _sideDir + _sideDir);
+            Check(WalkableFrom(outside, (Vector3)_sideIn), $"walkable from the yard at {outside} in through the side door");
+        }
+
+        private static int _doorsPhase;
+
+        private void SetPlayer(Entity player, Vector3 at)
+        {
+            CPosition pos = EntityManager.GetComponentData<CPosition>(player);
+            pos.Position = at;
+            pos.ForceSnap = true;
+            EntityManager.SetComponentData(player, pos);
+        }
+
+        private void StepDoorsRestore()
+        {
+            if (!_doorsReady || !DoorsEditorReady())
+            {
+                return;
+            }
+            FloorPlanView view = FloorPlanView.TestInstance;
+            view.TestSetEdge(_sideIn, _sideDir, null);
+            view.TestSetEdge(_doorOld, new LayoutPosition(0, -1), FeatureType.FrontDoor);
+            view.TestApply();
+        }
+
+        private void StepDoorsVerifyRestored()
+        {
+            if (!_doorsReady)
+            {
+                return;
+            }
+            bool closed = AllWith<CFloorPlanSession>().Count == 0;
+            if (!closed && StepElapsed < 8f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            LayoutBlueprint live = ReadLayout();
+            Check(closed && FloorPlanSerializer.Hash(live) == _doorsHash, "the doors are back as they were");
+            Check(!YardRing.Active, "with the side door gone the yard ring closes");
+            Entity layout = GetSingletonEntity<SLayout>();
+            Check((EntityManager.GetComponentData<CFrontDoorMarker>(layout).Location - live.GetFrontDoor()).sqrMagnitude < 0.01f, "the front door marker is back");
+            Entity practice = PracticeTrigger();
+            if (practice != default)
+            {
+                Vector3 want = PracticeSpot(live.GetFrontDoor());
+                Check(Mathf.Abs(Pos(practice).x - want.x) < 0.05f && Mathf.Abs(Pos(practice).z - want.z) < 0.05f, "the practice terminal is back beside the door");
+            }
+            CheckCameraMarkers(CurrentBounds(), "after the doors were put back");
+        }
+
         // ---- night chair path checks spread over frames (NightChairPathing) ----
         // The test restaurant has too few chairs for the spreading to switch on, so the threshold is
         // lowered for this step. After a full refresh cycle every ghost chair's IsPathable must match
         // a fresh check made the way vanilla's MarkUnpathableChairs does it.
 
         private int _chairThrottleBefore = -1;
+        private int _seatReusedBefore, _seatReused, _seatsCached;
+
+        /// <summary>Seats the game found at every table (the CTablePlace buffers FindTablePlaces fills).</summary>
+        private int TablePlaces()
+        {
+            int n = 0;
+            EntityQuery q = GetEntityQuery(typeof(CTablePlace));
+            using (Unity.Collections.NativeArray<Entity> sets = q.ToEntityArray(Unity.Collections.Allocator.Temp))
+            {
+                foreach (Entity e in sets)
+                {
+                    n += EntityManager.GetBuffer<CTablePlace>(e).Length;
+                }
+            }
+            return n;
+        }
+
+        // ---- night seat path checks cached (NightTablePlacePaths) ----
+        // StepChairPathingSpread ran with the threshold lowered, which also turned the seat path cache
+        // on; with it back up, the game's own full check runs. Both must find the same seats.
+        private void StepSeatPathsCompare()
+        {
+            if (StepElapsed < 0.5f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            int full = TablePlaces();
+            if (full == 0 && _seatsCached == 0)
+            {
+                Log("INFO no table seats at night; the seat path cache isn't exercised.");
+                return;
+            }
+            Check(_seatReused > 0, $"the seat path cache was used while spreading was on ({_seatReused} cached answers)");
+            Check(_seatsCached == full, $"seats found with the cache match the game's full check ({_seatsCached} vs {full})");
+        }
 
         private void StepChairPathingSpread()
         {
             if (_chairThrottleBefore < 0)
             {
                 _chairThrottleBefore = NightChairPathing.ThrottleAbove;
-                NightChairPathing.ThrottleAbove = 0;
+                NightChairPathing.ThrottleAbove = 0; // also switches on the seat path cache (NightTablePlacePaths)
+                _seatReusedBefore = NightTablePlacePaths.Reused;
             }
             if (StepElapsed < 2f)
             {
@@ -2440,6 +2676,8 @@ namespace EasyFloorPlanner
             }
             bool spread = NightChairPathing.LastThrottled;
             int checkedLast = NightChairPathing.LastChecked;
+            _seatsCached = TablePlaces();
+            _seatReused = NightTablePlacePaths.Reused - _seatReusedBefore;
             NightChairPathing.ThrottleAbove = _chairThrottleBefore;
             _chairThrottleBefore = -1;
             List<Entity> chairs = AllWith<CApplianceGhostChair>().Where(c => HasComponent<CPosition>(c)).ToList();
@@ -2499,9 +2737,30 @@ namespace EasyFloorPlanner
                     }
                     Log("SURVEY seam test: no big flat ground box in this setting.");
                 }
-                else if (SelfTest.ShotDir != null)
+                else if (_surveyStage == 1 && SelfTest.ShotDir != null)
                 {
                     _survey.SaveRaw(Path.Combine(SelfTest.ShotDir, $"seam-{_surveySetting}.png"));
+                }
+                else if (_surveyStage == 2 && SelfTest.ShotDir != null)
+                {
+                    _survey.SaveRaw(Path.Combine(SelfTest.ShotDir, "terminal-hologram.png"));
+                }
+                if (_surveyStage <= 1)
+                {
+                    // The Floor Plan terminal's hologram (FloorPlanHologram), close up.
+                    _survey.Dispose();
+                    _survey = new GroundSurvey();
+                    RerollBlueprintView terminal = UnityEngine.Object.FindObjectsOfType<RerollBlueprintView>()
+                        .FirstOrDefault(v => v.transform.Find("Container/EasyFloorPlanner Drafting Hologram") != null);
+                    if (terminal != null)
+                    {
+                        _surveyStage = 2;
+                        _survey.RenderTerminal(terminal.transform.position);
+                        Log($"SURVEY terminal hologram: close-up of the Floor Plan terminal at {terminal.transform.position}.");
+                        Retry(0.5f);
+                        return;
+                    }
+                    Log("SURVEY no Floor Plan terminal with the drafting hologram found.");
                 }
                 _survey.Dispose();
                 _survey = null;
@@ -2519,6 +2778,7 @@ namespace EasyFloorPlanner
             Log($"SURVEY current setting {setting}; restaurant bounds {b.min.x:0}..{b.max.x:0} x {b.min.z:0}..{b.max.z:0}.");
             GroundSurvey.LogSettings();
             GroundSurvey.LogRenderers();
+            GroundSurvey.LogTerminals();
             _surveySetting = setting;
             _survey = new GroundSurvey();
             _survey.Render();
@@ -2708,7 +2968,10 @@ namespace EasyFloorPlanner
                 Retry(0.5f);
                 return;
             }
-            Check(panel != null, "the Camera Controls panel opens from the pause menu");
+            if (_shotPage == -1 || panel == null)
+            {
+                Check(panel != null, "the Camera Controls panel opens from the pause menu"); // once, not per page
+            }
             if (panel == null)
             {
                 _pause?.Hide();
@@ -3039,103 +3302,8 @@ namespace EasyFloorPlanner
         private static float _nextDayLog;
         private static bool _loggedAssignment;
         private static bool _seated;
+        private static float _indicatorSeenAt = -1f;
         private static float _lastTimeOfDay = -1f, _clockMovedAt, _nextPausedLog;
-
-        /// <summary>
-        /// Grows a block of new dining floor, moves one table (with its chairs) into it, and removes
-        /// the other tables. Customers then have to walk onto the new floor to sit down.
-        /// </summary>
-        // ---- lighting probe: how do the shaders read the night-lighting map? (investigation) ----
-
-        private LightingProbe _probe;
-        private readonly List<float[,]> _probeGrids = new List<float[,]>();
-        private const int ProbePx = 5, ProbePy = 7; // the single lit map pixel in patterns 2 and 3
-
-        private static readonly string[] ProbeNames =
-        {
-            "all outdoor", "all indoor", "one pixel, clamp", "one pixel, repeat", "global outdoor + per-renderer indoor",
-        };
-
-        private void ProbeRequest(int index)
-        {
-            switch (index)
-            {
-                case 0: _probe.Request(LightingProbe.Pattern32((x, y) => false, TextureWrapMode.Clamp)); break;
-                case 1: _probe.Request(LightingProbe.Pattern32((x, y) => true, TextureWrapMode.Clamp)); break;
-                case 2: _probe.Request(LightingProbe.Pattern32((x, y) => x == ProbePx && y == ProbePy, TextureWrapMode.Clamp)); break;
-                case 3: _probe.Request(LightingProbe.Pattern32((x, y) => x == ProbePx && y == ProbePy, TextureWrapMode.Repeat)); break;
-                case 4:
-                    int n = _probe.OverridePerRenderer(LightingProbe.Pattern32((x, y) => true, TextureWrapMode.Clamp));
-                    Log($"probe: gave {n} renderers their own all-indoor map.");
-                    _probe.Request(LightingProbe.Pattern32((x, y) => false, TextureWrapMode.Clamp));
-                    break;
-            }
-        }
-
-        private void StepLightingProbe()
-        {
-            if (_probe == null)
-            {
-                _probe = new LightingProbe();
-                _probe.Setup();
-                _probeGrids.Clear();
-                ProbeRequest(0);
-                Retry(0.4f);
-                return;
-            }
-            int index = _probeGrids.Count;
-            string png = SelfTest.ShotDir != null ? Path.Combine(SelfTest.ShotDir, $"probe-{index}.png") : null;
-            _probeGrids.Add(_probe.Read(png));
-            if (index == 4)
-            {
-                _probe.RestorePerRenderer();
-            }
-            if (_probeGrids.Count < ProbeNames.Length)
-            {
-                ProbeRequest(_probeGrids.Count);
-                Retry(0.4f);
-                return;
-            }
-            _probe.Dispose();
-            ReportLightingProbe();
-        }
-
-        private void ReportLightingProbe()
-        {
-            int half = LightingProbe.Half;
-            float[,] outdoor = _probeGrids[0], indoor = _probeGrids[1];
-            var sensitive = new List<(int x, int z)>();
-            for (int i = 0; i < half * 2; i++)
-            {
-                for (int j = 0; j < half * 2; j++)
-                {
-                    if (Mathf.Abs(indoor[i, j] - outdoor[i, j]) > 0.03f)
-                    {
-                        sensitive.Add((i - half, j - half));
-                    }
-                }
-            }
-            if (sensitive.Count == 0)
-            {
-                Log("INFO probe: no tile's brightness depends on the map (night fade had no effect?)");
-                return;
-            }
-            Log($"probe: {sensitive.Count} tiles react to the map; x {sensitive.Min(t => t.x)}..{sensitive.Max(t => t.x)}, z {sensitive.Min(t => t.z)}..{sensitive.Max(t => t.z)}; " +
-                $"mean brightness outdoor {sensitive.Average(t => outdoor[t.x + half, t.z + half]):0.000}, indoor {sensitive.Average(t => indoor[t.x + half, t.z + half]):0.000}");
-
-            for (int k = 2; k < _probeGrids.Count; k++)
-            {
-                float[,] g = _probeGrids[k];
-                var lit = sensitive.Where(t =>
-                {
-                    float o = outdoor[t.x + half, t.z + half], n = indoor[t.x + half, t.z + half];
-                    return (g[t.x + half, t.z + half] - o) / (n - o) > 0.5f;
-                }).ToList();
-                string list = string.Join(" ", lit.Take(24).Select(t => $"({t.x},{t.z})"));
-                Log($"probe [{ProbeNames[k]}]: {lit.Count} of {sensitive.Count} reacting tiles lit{(lit.Count > 0 && lit.Count <= 24 ? ": " + list : lit.Count > 24 ? " (first 24: " + list + ")" : "")}");
-            }
-            Check(true, "lighting probe ran (results above)");
-        }
 
         // ---- far lighting: floor beyond the lighting map's 32 x 32 tiles is lit correctly at night ----
 
@@ -3327,12 +3495,45 @@ namespace EasyFloorPlanner
         private float[,] _rainHits;
         private int _rainOldLayer;
         private readonly List<string> _rainReport = new List<string>();
+        private List<UnityEngine.VFX.VisualEffect> _rainCopies = new List<UnityEngine.VFX.VisualEffect>();
+        private (int minX, int maxX) _rainArea0;
+        private int _rainFar3;
+        private Dictionary<UnityEngine.VFX.VisualEffect, Texture> _copyMaps = new Dictionary<UnityEngine.VFX.VisualEffect, Texture>();
 
         private void RainConfigure(int config)
         {
             _rainConfig = config;
             _rainConfigStart = UnityEngine.Time.realtimeSinceStartup;
             _rainHits = new float[LightingProbe.Half * 2, LightingProbe.Half * 2];
+            if (config == 4)
+            {
+                _copyMaps = _rainCopies.Where(c => c != null).ToDictionary(c => c, c => c.GetTexture("_RoomLayout"));
+                Texture allIndoor = LightingProbe.Pattern32((x, y) => true, TextureWrapMode.Clamp);
+                foreach (UnityEngine.VFX.VisualEffect c in _copyMaps.Keys)
+                {
+                    c.SetTexture("_RoomLayout", allIndoor);
+                }
+                return;
+            }
+            if (config == 3)
+            {
+                // EFP's weather copies (WeatherTiler) with the game's own map on the original: rain
+                // must reach the far strip, and its indoor tiles must stay dry.
+                _rain.transform.position = Vector3.zero;
+                _rain.SetTexture("_RoomLayout", Shader.GetGlobalTexture("_RoomLayout"));
+                WeatherTiler.TestShowAll = true;
+                _rainCopies = UnityEngine.Object.FindObjectsOfType<UnityEngine.VFX.VisualEffect>(true)
+                    .Where(v => v.name.Contains("(EFP ") && v.name.StartsWith(_rain.gameObject.name)).ToList();
+                foreach (UnityEngine.VFX.VisualEffect c in _rainCopies)
+                {
+                    foreach (Transform t in c.GetComponentsInChildren<Transform>(true))
+                    {
+                        t.gameObject.layer = RainLayer;
+                    }
+                }
+                Log($"rain config 3: {_rainCopies.Count} EFP rain copies ({WeatherTiler.TotalCopies} weather copies in all).");
+                return;
+            }
             _rain.transform.position = config == 0 ? Vector3.zero : new Vector3(RainShift, 0f, 0f);
             Texture map = config == 2
                 ? LightingProbe.Pattern32((x, y) => x < 16, TextureWrapMode.Clamp) // left half indoors
@@ -3398,10 +3599,137 @@ namespace EasyFloorPlanner
                 }
             }
             string cols = string.Join(",", Enumerable.Range(0, half * 2).Where(i => i % 2 == 0).Select(i => columns[i] + columns[i + 1]));
-            string line = $"rain config {_rainConfig} ({(_rainConfig == 0 ? "at origin" : "moved +" + RainShift + " x")}{(_rainConfig == 2 ? ", map indoor for pixels x<16" : "")}): {hits} tiles hit, x {minX}..{maxX}, z {minZ}..{maxZ}; hits per 2-tile column from x={-half}: {cols}";
+            string what = _rainConfig == 4 ? "EFP's copies with all-indoor maps" : _rainConfig == 3 ? "with EFP's copies" : (_rainConfig == 0 ? "at origin" : "moved +" + RainShift + " x") + (_rainConfig == 2 ? ", map indoor for pixels x<16" : "");
+            string line = $"rain config {_rainConfig} ({what}): {hits} tiles hit, x {minX}..{maxX}, z {minZ}..{maxZ}; hits per 2-tile column from x={-half}: {cols}";
             _rainReport.Add(line);
             Log(line);
-            if (_rainConfig < 2)
+            // WeatherTiler relies on these three measurements: the spawn area, that it moves with the
+            // effect, and that the map is read in the effect's local space.
+            if (_rainConfig == 0)
+            {
+                _rainArea0 = (minX, maxX);
+                Check(hits > 200 && minX >= WeatherTiler.AreaMinX - 1 && maxX <= WeatherTiler.AreaMaxX + 1
+                      && minZ >= WeatherTiler.AreaMinZ - 1 && maxZ <= WeatherTiler.AreaMaxZ + 1,
+                    $"the rain spawns over the area WeatherTiler tiles by (x {minX}..{maxX}, z {minZ}..{maxZ}; expected about x {WeatherTiler.AreaMinX}..{WeatherTiler.AreaMaxX}, z {WeatherTiler.AreaMinZ}..{WeatherTiler.AreaMaxZ})");
+            }
+            else if (_rainConfig == 1)
+            {
+                Check(Math.Abs(minX - (_rainArea0.minX + (int)RainShift)) <= 1 && Math.Abs(maxX - (_rainArea0.maxX + (int)RainShift)) <= 1,
+                    $"the rain area moves with the effect (x {minX}..{maxX} after moving {RainShift})");
+            }
+            else if (_rainConfig == 2)
+            {
+                Check(minX >= (int)RainShift - 2 && minX <= (int)RainShift + 1,
+                    $"the rain reads its map in local space (masked to x >= {minX} with the effect moved {RainShift})");
+            }
+            if (_rainConfig == 3)
+            {
+                int far = 0, wetIndoors = 0, farIndoors = 0, nearIndoors = 0, nearWet = 0;
+                var wetList = new List<string>();
+                LayoutBlueprint live = ReadLayout();
+                foreach (KeyValuePair<LayoutPosition, Room> t in live.Tiles.Where(t => LayoutHelpers.IsInside(t.Value)))
+                {
+                    if (Math.Abs(t.Key.x) >= half || Math.Abs(t.Key.y) >= half)
+                    {
+                        continue;
+                    }
+                    bool wet = _rainHits[t.Key.x + half, t.Key.y + half] > 0.12f;
+                    if (t.Key.x < -11)
+                    {
+                        farIndoors++;
+                    }
+                    else if (t.Key.x >= WeatherTiler.AreaMinX && t.Key.x <= WeatherTiler.AreaMaxX && t.Key.y >= WeatherTiler.AreaMinZ && t.Key.y <= WeatherTiler.AreaMaxZ)
+                    {
+                        nearIndoors++;
+                        nearWet += wet ? 1 : 0;
+                    }
+                }
+                for (int i = 0; i < half * 2; i++)
+                {
+                    for (int j = 0; j < half * 2; j++)
+                    {
+                        if (_rainHits[i, j] <= 0.12f)
+                        {
+                            continue;
+                        }
+                        var tile = new LayoutPosition(i - half, j - half);
+                        far += tile.x < -11 ? 1 : 0;
+                        if (tile.x < -11 && live.Tiles.TryGetValue(tile, out Room r) && LayoutHelpers.IsInside(r))
+                        {
+                            wetIndoors++;
+                            wetList.Add(Fmt(tile));
+                        }
+                    }
+                }
+                Check(_rainCopies.Count > 0 && far > 0, $"with EFP's weather copies, rain falls past the original area ({far} tiles west of x = -11; {_rainCopies.Count} copies)");
+                _rainFar3 = far;
+                // Wetness alone can't judge the masking: the far strip is one tile wide, and the rain
+                // falls at a slant, so streaks from the outdoor rows either side cross it (the game's
+                // own rain wets indoor tiles at walls the same way). Logged for reference.
+                Log($"INFO rain on indoor tiles: game's own effect {nearWet} of {nearIndoors}; copies {wetIndoors} of {farIndoors}{(wetList.Count > 0 ? ": " + string.Join(" ", wetList) : "")}");
+                // What decides the masking is the map each copy holds (the game's effect masks by its
+                // map in local space: config 2). Read it back from the copies over the strip.
+                int right = 0, wrong = 0;
+                foreach (UnityEngine.VFX.VisualEffect c in _rainCopies.Where(c => c != null && c.HasTexture("_RoomLayout")))
+                {
+                    var map = c.GetTexture("_RoomLayout") as Texture2D;
+                    Vector3 o = c.transform.localPosition - _rain.transform.localPosition;
+                    int ox = Mathf.RoundToInt(o.x), oz = Mathf.RoundToInt(o.z);
+                    if (map == null || !map.isReadable || (ox == 0 && oz == 0))
+                    {
+                        continue;
+                    }
+                    foreach ((LayoutPosition _, LayoutPosition tile) in _farStrip)
+                    {
+                        foreach (LayoutPosition t in new[] { tile, tile + new LayoutPosition(0, 1), tile + new LayoutPosition(0, -1) })
+                        {
+                            int px = t.x + 16 - ox, py = t.y + 16 - oz;
+                            if (px < 0 || py < 0 || px >= map.width || py >= map.height
+                                || t.x - ox < WeatherTiler.AreaMinX || t.x - ox > WeatherTiler.AreaMaxX || t.y - oz < WeatherTiler.AreaMinZ || t.y - oz > WeatherTiler.AreaMaxZ)
+                            {
+                                continue; // not in this copy's area
+                            }
+                            bool indoorInMap = map.GetPixel(px, py).g < 0.5f; // vanilla encoding: G = 0 indoors
+                            bool indoor = live.Tiles.TryGetValue(t, out Room rr) && LayoutHelpers.IsInside(rr);
+                            if (indoorInMap == indoor)
+                            {
+                                right++;
+                            }
+                            else
+                            {
+                                wrong++;
+                            }
+                        }
+                    }
+                }
+                Check(right > 0 && wrong == 0, $"the weather copies over the far strip hold maps that mark its tiles indoors and their neighbours outdoors ({right} right, {wrong} wrong)");
+            }
+            if (_rainConfig == 4)
+            {
+                int far4 = 0;
+                for (int i = 0; i < half * 2; i++)
+                {
+                    for (int j = 0; j < half * 2; j++)
+                    {
+                        far4 += _rainHits[i, j] > 0.12f && i - half < -11 ? 1 : 0;
+                    }
+                }
+                Check(_rainFar3 > 0 && far4 <= _rainFar3 / 10, $"the weather copies mask by their own maps (all-indoor maps: {far4} tiles west of x = -11 wet, against {_rainFar3} with the real maps)");
+                foreach (KeyValuePair<UnityEngine.VFX.VisualEffect, Texture> kv in _copyMaps.Where(kv => kv.Key != null))
+                {
+                    kv.Key.SetTexture("_RoomLayout", kv.Value); // their real maps back
+                }
+                _copyMaps.Clear();
+                WeatherTiler.TestShowAll = false;
+                foreach (UnityEngine.VFX.VisualEffect c in _rainCopies.Where(c => c != null))
+                {
+                    foreach (Transform t in c.GetComponentsInChildren<Transform>(true))
+                    {
+                        t.gameObject.layer = _rainOldLayer;
+                    }
+                }
+            }
+            if (_rainConfig < 4)
             {
                 RainConfigure(_rainConfig + 1);
                 Retry(0.1f);
@@ -3416,7 +3744,6 @@ namespace EasyFloorPlanner
             {
                 t.gameObject.layer = _rainOldLayer;
             }
-            Check(true, "rain measurement ran (results above)");
         }
 
         private void StepWeatherShot()
@@ -3425,7 +3752,7 @@ namespace EasyFloorPlanner
             {
                 return;
             }
-            if (StepElapsed < 5f)
+            if (StepElapsed < 2f)
             {
                 Retry(0.5f); // let the rain fill the sky
                 return;
@@ -3470,6 +3797,10 @@ namespace EasyFloorPlanner
             Check(CurrentBounds() == _boundsBeforeFar, "CBounds back to what they were before the far-lighting strip");
         }
 
+        /// <summary>
+        /// Grows a block of new dining floor, moves one table (with its chairs) into it, and removes
+        /// the other tables. Customers then have to walk onto the new floor to sit down.
+        /// </summary>
         private void StepPrepareDayLayout()
         {
             LayoutBlueprint bp = ReadLayout();
@@ -3816,11 +4147,21 @@ namespace EasyFloorPlanner
             {
                 return;
             }
-            if (StepElapsed < 12f)
+            // Wait until a seated group's indicator exists (it appears once they've ordered), then a
+            // moment for it to settle; at most 12 s (was a flat 12 s).
+            bool indicated = AllWith<CCustomerIndicator>().Any(i => HasComponent<CIndicator>(i)
+                && EntityManager.Exists(EntityManager.GetComponentData<CIndicator>(i).Source)
+                && HasComponent<CAtTable>(EntityManager.GetComponentData<CIndicator>(i).Source));
+            if (indicated && _indicatorSeenAt < 0f)
             {
-                Retry(1f);
+                _indicatorSeenAt = StepElapsed;
+            }
+            if ((_indicatorSeenAt < 0f || StepElapsed < _indicatorSeenAt + 1f) && StepElapsed < 12f)
+            {
+                Retry(0.5f);
                 return;
             }
+            _indicatorSeenAt = -1f;
             Log($"moved table is at {_dayTablePos}");
             foreach (Entity g in AllWith<CAssignedTable>())
             {
@@ -4122,7 +4463,7 @@ namespace EasyFloorPlanner
         private static void Finish()
         {
             _stage = Stage.Done;
-            Log($"DONE pass={_pass} fail={_fail}");
+            Log($"DONE pass={_pass} fail={_fail} (steps took {(_stepsStartedAt < 0f ? 0f : UnityEngine.Time.realtimeSinceStartup - _stepsStartedAt):0} s)");
             if (SelfTest.QuitWhenDone)
             {
                 // Give the last screenshot a few frames to be written.

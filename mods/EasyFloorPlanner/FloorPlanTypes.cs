@@ -24,6 +24,14 @@ namespace EasyFloorPlanner
 
         /// <summary>Someone is editing; pressing the terminal now watches their draft.</summary>
         public const int LabelWatch = -3;
+
+        /// <summary>
+        /// Nobody is editing and the host's "Who can edit" is Host only: the host's machine shows
+        /// "Floor Plan", the clients' show "Host only" (the label is how clients learn the setting).
+        /// </summary>
+        public const int LabelHostOnly = -4;
+
+        public static bool IsTerminalLabel(int price) => price == LabelFloorPlan || price == LabelWatch || price == LabelHostOnly;
     }
 
     /// <summary>
@@ -74,6 +82,9 @@ namespace EasyFloorPlanner
 
         /// <summary>Spectator: stop watching.</summary>
         StopWatching = 4,
+
+        /// <summary>Editor: apply, and keep the editor open (the "Apply keeps the editor open" setting).</summary>
+        ApplyKeepOpen = 5,
     }
 
     /// <summary>

@@ -29,6 +29,13 @@ namespace EasyFloorPlanner
     /// that pattern and create the missing ones. Comparing against the current layout (not the
     /// previous edit's) also repairs restaurants grown before this fix, on their next apply.
     /// Nothing happens if none of the pieces exist (another mod removed them, or an old save).
+    ///
+    /// Added 2026-11-19 with the movable front door and outside doors:
+    ///   - the front border with a gap at the door (Countryside and Witch decorators, 0.7 in front),
+    ///     Halloween's front wall (also gapped at the door) and the Countryside cobble path, which runs
+    ///     from x = -20 to the door. They follow the door when it moves (and the width on resizes);
+    ///   - with the yard ring (YardRing, a side or back door), the street decorator's side buildings
+    ///     and back row stand YardRing.Width tiles further out, leaving an alley round the building.
     /// </summary>
     internal static class StreetPieces
     {
@@ -37,7 +44,10 @@ namespace EasyFloorPlanner
         private const int MaxPlacementPos = 20;
         private const float Tolerance = 0.01f;
 
-        private enum Role { Street, Wall, InternalWall, FrontBorder }
+        private enum Role { Street, Wall, InternalWall, FrontBorder, GapBorder, HalloweenWall, CobblePath }
+
+        // The countryside-type decorators' private PathStartLocation.
+        private const float PathStart = -20f;
 
         /// <summary>The active setting's managed pieces: which IDs each role accepts, and which to create.</summary>
         private sealed class Decor
@@ -46,6 +56,8 @@ namespace EasyFloorPlanner
             public readonly Dictionary<Role, int> DefaultId = new Dictionary<Role, int>();
             public bool HasStreet;
             public float BorderSpacing;
+            public float GapSpacing;
+            public float HalloweenSpacing;
 
             public bool Any => Ids.Count > 0;
 
@@ -115,6 +127,25 @@ namespace EasyFloorPlanner
                         decor.BorderSpacing = train.BorderSpacing;
                         Add(decor, Role.FrontBorder, train.FrontBorder);
                     }
+                    else if (c is CountrysideDecorator.DecorationsConfiguration country)
+                    {
+                        if (country.FrontBorder != null && country.BorderSpacing > 0.01f)
+                        {
+                            decor.GapSpacing = country.BorderSpacing;
+                            Add(decor, Role.GapBorder, country.FrontBorder);
+                        }
+                        Add(decor, Role.CobblePath, country.Cobblestone);
+                    }
+                    else if (c is WitchDecorator.DecorationsConfiguration witch && witch.FrontBorder != null && witch.BorderSpacing > 0.01f)
+                    {
+                        decor.GapSpacing = witch.BorderSpacing;
+                        Add(decor, Role.GapBorder, witch.FrontBorder);
+                    }
+                    else if (c is HalloweenDecorator.DecorationsConfiguration halloween && halloween.FrontWall != null && halloween.BorderSpacing > 0.01f)
+                    {
+                        decor.HalloweenSpacing = halloween.BorderSpacing;
+                        Add(decor, Role.HalloweenWall, halloween.FrontWall);
+                    }
                 }
             }
             Cache[settingId] = decor;
@@ -150,6 +181,7 @@ namespace EasyFloorPlanner
             Bounds b = bp.GetBounds(); // tile coordinates; y is world z, as in Decorate
             float minX = b.min.x, maxX = b.max.x, minY = b.min.y, maxY = b.max.y;
             var points = new List<(Role, Vector3)>();
+            float ring = YardRing.Active ? YardRing.Width : 0f; // the street's side and back buildings stand back
             if (decor.HasStreet)
             {
                 if (decor.Ids.ContainsKey(Role.Street))
@@ -170,25 +202,56 @@ namespace EasyFloorPlanner
                         points.Add((Role.Street, new Vector3(i, 0f, minY - 1.5f)));
                     }
                 }
-                for (float x = minX - 1.5f; x > MinPlacementPos; x -= 2f)
+                for (float x = minX - 1.5f - ring; x > MinPlacementPos; x -= 2f)
                 {
                     AddSide(decor, points, x, minY - 0.5f);
                 }
-                for (float x = maxX + 1.5f; x < MaxPlacementPos; x += 2f)
+                for (float x = maxX + 1.5f + ring; x < MaxPlacementPos; x += 2f)
                 {
                     AddSide(decor, points, x, minY - 0.5f);
                 }
                 if (decor.Ids.ContainsKey(Role.InternalWall))
                 {
-                    for (float x = minX - 1f; x <= maxX + 1f; x += 2f)
+                    for (float x = minX - 1f - ring; x <= maxX + 1f + ring; x += 2f)
                     {
-                        points.Add((Role.InternalWall, new Vector3(x, 0f, maxY + 0.65f)));
+                        points.Add((Role.InternalWall, new Vector3(x, 0f, maxY + 0.65f + ring)));
                     }
+                }
+            }
+            Vector3 door = bp.GetFrontDoor();
+            if (decor.Ids.ContainsKey(Role.GapBorder))
+            {
+                // CountrysideDecorator / WitchDecorator: the border, with a gap at the door and none in front of a garden.
+                for (float x = minX; x <= maxX; x += decor.GapSpacing)
+                {
+                    if (!(Mathf.Abs(x - door.x) < 0.7f) && bp[(int)x, (int)minY].Type != RoomType.Garden)
+                    {
+                        points.Add((Role.GapBorder, new Vector3(x, 0f, minY - 0.7f)));
+                    }
+                }
+            }
+            if (decor.Ids.ContainsKey(Role.HalloweenWall))
+            {
+                // HalloweenDecorator: the front wall between its pillars, with a gap at the door.
+                for (float x = minX; x <= maxX + 1f; x += decor.HalloweenSpacing)
+                {
+                    if (!(Mathf.Abs(x - door.x) < 0.7f) && !(x >= maxX + decor.HalloweenSpacing / 2f))
+                    {
+                        points.Add((Role.HalloweenWall, new Vector3(x, 0f, minY - 0.7f)));
+                    }
+                }
+            }
+            if (decor.Ids.ContainsKey(Role.CobblePath))
+            {
+                // CountrysideDecorator: the path runs from x = -20 to the door.
+                for (float x = PathStart; x <= door.x; x += 0.8f)
+                {
+                    points.Add((Role.CobblePath, new Vector3(x, 0f, minY - 1.2f)));
                 }
             }
             if (decor.Ids.ContainsKey(Role.FrontBorder))
             {
-                Vector3 frontDoor = bp.GetFrontDoor();
+                Vector3 frontDoor = door;
                 for (float x = minX; x <= maxX; x += decor.BorderSpacing)
                 {
                     if (!(Mathf.Abs(x - frontDoor.x) < 0.7f) && bp[(int)x, (int)minY].Type != RoomType.Garden)
@@ -229,6 +292,11 @@ namespace EasyFloorPlanner
                 case Role.InternalWall:
                     float frac = p.z - Mathf.Floor(p.z);
                     return front || Mathf.Abs(frac - 0.65f) < Tolerance;
+                case Role.GapBorder:
+                case Role.HalloweenWall:
+                    return Mathf.Abs(p.z - (minY - 0.7f)) < Tolerance;
+                case Role.CobblePath:
+                    return Mathf.Abs(p.z - (minY - 1.2f)) < Tolerance;
                 default:
                     return front;
             }
@@ -403,7 +471,9 @@ namespace EasyFloorPlanner
                 return;
             }
             EntityManager.CreateEntity(typeof(CStreetPiecesChecked), typeof(Kitchen.CDoNotPersist));
-            LastResult = StreetPieces.Sync(EntityManager, LayoutWriter.Read(EntityManager, layout));
+            LayoutBlueprint bp = LayoutWriter.Read(EntityManager, layout);
+            YardRing.Refresh(bp); // before the sync: the street's side buildings depend on it
+            LastResult = StreetPieces.Sync(EntityManager, bp);
         }
     }
 }

@@ -1,6 +1,6 @@
 # Easy Floor Planner
 
-A PlateUp! mod that lets you reshape your restaurant during the night: grow or shrink it, move the walls between rooms, add new kitchens and dining rooms, and turn any internal wall into a serving hatch or a door.
+A PlateUp! mod that lets you reshape your restaurant during the night: grow or shrink it, move the walls between rooms, add new kitchens and dining rooms, turn any internal wall into a serving hatch or a door, add doors to the outside, and move the front door.
 
 ## Installing
 
@@ -10,20 +10,22 @@ A PlateUp! mod that lets you reshape your restaurant during the night: grow or s
    - To find the folder in Steam: right-click PlateUp, then Manage, then Browse local files, and open the `PlateUp` folder.
    - Create the `Mods` folder if it doesn't exist.
    - Keep the `.pdb` next to the `.dll`: it adds line numbers to error reports.
-4. **Start the game.** At night, a **Floor Plan** terminal appears in front of your restaurant.
+4. **Recommended: install [Mod List](https://github.com/Zambie223/PlateUp-ModList) 0.2.0 or later** the same way. Easy Floor Planner works without it, but its [settings](#settings) are only shown through Mod List (see [Why Mod List?](#why-mod-list)).
+5. **Start the game.** At night, a **Floor Plan** terminal appears in front of your restaurant.
 
 **To uninstall,** delete the `Mods\EasyFloorPlanner` folder. Edited layouts stay as they are (see [Saves](#saves)).
 
 ## How it works
 
-- **Opening the editor:** at night, a **Floor Plan** terminal stands outside, in front of your restaurant near the practice-mode pad. Press interact on it. Only one player can edit at a time.
+- **Opening the editor:** at night, a **Floor Plan** terminal stands outside, in front of your restaurant near the practice-mode pad. Press interact on it. Only one player can edit at a time. The host can allow only their own players to edit (the **Who can edit** [setting](#settings)); other players' terminal then reads **Host only**, and they can still watch.
 - **Watching:** while someone is editing, the terminal reads **Watch**. Press it to see their draft live on your screen: the same overlay, their cursor in their player colour, and their current brush. Watching is read-only; press Back (Esc on keyboard) to stop. Players on the editor's own screen (local co-op) already see the draft, so the terminal does nothing for them.
 - **Drafting:** nothing changes until you apply. Your edits are drawn as a coloured overlay on the floor:
   - room colours: blue shades for kitchens, warm shades for dining rooms, purple for other rooms;
   - stronger colour where a tile changes, and red where floor is removed;
   - **orange** for floor that can't be reached from the front door (add a door);
   - green bars for doors and orange bars for hatches, brighter where they're new.
-- **Applying:** press Apply and the restaurant is rebuilt once with all your changes. Press Cancel and nothing changes.
+  - These are the standard colours. A **colourblind-friendly** palette is a [setting](#settings); the editor names its colours in its messages either way.
+- **Applying:** press Apply and the restaurant is rebuilt once with all your changes, and the editor closes (or stays open, with the **Apply keeps the editor open** setting). Press Cancel and nothing changes; if you have changes that aren't applied, the editor asks you to press Cancel again first.
 
 ### Brushes (painting floor)
 
@@ -33,7 +35,11 @@ A PlateUp! mod that lets you reshape your restaurant during the night: grow or s
 
 ### Walls
 
-Switch to wall mode to set the walls between rooms. It has its own brushes: **Wall**, **Hatch (serving window)** and **Door**. Click a wall (or drag along several) to make it the brush's type. The cursor shows the brush's colour (grey for wall, orange for hatch, green for door), and right-clicking a wall picks up its type as the brush.
+Switch to wall mode to set the walls. It has its own brushes: **Wall**, **Hatch (serving window)**, **Door** and **Front door**. Click a wall (or drag along several) to make it the brush's type. The cursor shows the brush's colour (grey for wall, orange for hatch, green for door, blue for the front door), and right-clicking a wall picks up its type as the brush.
+
+- **Doors to the outside:** the Door brush also works on the building's side and back walls (not the front wall, which keeps the front door, the queue and the setting's front decorations). Customers and chefs can both use them; customers still queue at the front door.
+- **A yard round the building:** while the restaurant has a side or back door, chefs can step out into a 2-tile yard all round the building (the invisible fence that keeps chefs near the restaurant moves out to match, and in City and Turbo the neighbouring buildings stand back to leave an alley). Appliances still can't be put down outside. Scenery right outside a new door is cleared.
+- **Moving the front door:** click a spot on the front wall with the Front door brush. The old spot becomes wall, and the queue, the nameplate, the reroll and practice terminals, the outside bin and the setting's front decorations (path, fence gap) follow. Nothing can stand on the tile just inside the new spot.
 
 Every wall you've changed shows a hologram of its new state, drawn like a floor plan: a solid bar for a wall, a window for a hatch, and an opening with a swinging door for a door. The wall under your cursor shows a fainter hologram of what clicking it would make.
 
@@ -55,7 +61,7 @@ A big or oddly shaped restaurant (say, a long wing of automation you don't need 
 | Move the view | W A S D | Left stick |
 | Point at a tile or wall | Mouse | The centre of the screen (move the view) |
 | Paint floor / set a wall | Left click (drag to paint) | Interact (hold to paint) |
-| Paint a filled box | Shift + left drag (Esc while dragging cancels it) | |
+| Paint a filled box (up to 127 x 127; its size shows while you drag) | Shift + left drag (Esc while dragging cancels it) | |
 | Pick the room (or wall type) under the cursor | Right click | Grab |
 | Change brush (room, or wall / hatch / door) | Q / E or mouse wheel | Secondary 1 |
 | Draw the camera area (camera area mode) | Left drag | Hold Interact and move the view |
@@ -63,7 +69,7 @@ A big or oddly shaped restaurant (say, a long wing of automation you don't need 
 | Zoom | Ctrl + mouse wheel | Hold RB + right stick up/down |
 | Undo | Ctrl+Z | Stop moving |
 | Apply | Enter | Menu select |
-| Cancel | Esc | Back |
+| Cancel (press twice if you have changes) | Esc | Back |
 
 Your chef stands still while the editor is open (or while you're watching), and the movement controls move the view instead, so you can build beyond what's on screen. The view also turns to look straight down, so walls don't hide the floor behind them. It goes back to normal when you close the editor. Other players keep playing.
 
@@ -85,9 +91,36 @@ At normal zoom you can pan a little (enough to see past the edges); zoom in to p
 
 **Follow** keeps your chef (or all of this machine's chefs, in local co-op) away from the screen edges while you're zoomed in. It's off by default, and the setting is remembered. Turn it off when you want the view to stay where you put it.
 
+How fast the camera zooms and pans, and how far out it can zoom, are [settings](#settings).
+
 The controls are ignored while a menu, a popup or the pause screen is open, and while another mod's window (such as a shop) has your input, so scrolling in that window doesn't zoom the camera behind it. In local co-op only the busy player's devices are ignored. Leaving the restaurant resets the view.
 
 You don't need to remember any of this: the pause menu has a **Camera Controls** button. It opens a panel like the Recipes one, starting on the page for your controller, and shows whether follow is on.
+
+## Settings
+
+The settings are in **Pause → Mods**, on the settings gear next to Easy Floor Planner. That screen comes from [Mod List](https://github.com/Zambie223/PlateUp-ModList) 0.2.0 or later. Each player has their own settings, kept on their own computer, except **Who can edit**, where the host's setting counts.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Follow your chef | Off | The same as F / RB + click the right stick (see [Camera while playing](#camera-while-playing)). |
+| Zoom speed | 100% | How fast the mouse wheel and the controller zoom (25% to 300%). |
+| Pan speed | 100% | How fast the controller pans, and how fast the editor's view moves. Dragging with the middle mouse button is unaffected. |
+| Furthest zoom-out | Normal | Normal, Further or Furthest. Further out widens the camera's view, so the edges of the screen look a little stretched. |
+| Editor colours | Standard | Standard, or Colourblind-friendly: colours chosen to stay distinct with red-green and blue-yellow colour blindness. Kitchens blue, dining rooms orange, unreachable floor white, removed floor black, doors orange, the front door blue, hatches black. |
+| Remember mode and brush | Off | The editor opens with the mode and brush you last closed it with, instead of floor painting. |
+| Apply keeps the editor open | Off | Applying rebuilds the restaurant and leaves the editor open; Cancel closes it. |
+| Who can edit | Everyone | Host only: only the players on the host's computer can open the editor. Everyone can still watch. |
+| Weather everywhere | On | Rain and snow over all of a big restaurant. Off: only near the middle, as in the base game. |
+| Profile next night and day | (button) | Writes which parts of the game cost the most frame time, over 30 seconds of night and 30 of day, to `Player.log`. Useful for performance reports. |
+
+### Why Mod List?
+
+Mod List is a separate mod, by the same author, that adds a **Mods** button to the pause menu listing the mods you have installed and their versions, with a settings page for each mod that has settings. We recommend it with Easy Floor Planner because:
+
+- **It's the only way to change the settings in game.** Without it, every setting keeps its default (or the value you last chose with Mod List installed).
+- **It shows which version you have.** Online, every player needs the same version of Easy Floor Planner; with Mod List, each player can check theirs from the pause menu.
+- **It's optional on both sides.** Neither mod needs the other: Easy Floor Planner doesn't reference Mod List, and Mod List finds the settings by itself. You can add or remove it at any time.
 
 ## Rules
 
@@ -98,7 +131,8 @@ You don't need to remember any of this: the pause menu has a **Camera Controls**
 - **Outdoor scenery never blocks.** Trees, rocks, bushes and flowers on new floor, or right beside it (so tree tops don't hang over it), are removed when you apply.
 - **Street settings (such as Turbo):** the neighbouring buildings, the street and the front border move to fit the new size, so new floor never ends up inside a neighbouring building.
 - **Every floor tile must be reachable from the front door,** through rooms and doors (hatches don't count).
-- **The front of the restaurant stays the front:** it can't grow toward the street. The front door and other special doors can't be moved.
+- **The front of the restaurant stays the front:** it can't grow toward the street. The front door can move along the front wall, but not to another side; other special doors (garage, greenhouse) can't be moved.
+- **Rooms can be reached through doors to the outside too:** a room whose only way in is its own side door is fine, since people can walk round the building.
 - **Maximum size:** up to 63 tiles from the centre in any direction (127 x 127 tiles).
   - In settings with grass or snow, the ground is extended under very large restaurants, matching the original, so there are no black edges. Street settings (City, Turbo) keep their dark backdrop.
   - The game's own day camera can't fit a restaurant much wider than about 45 tiles; use the camera zoom and pan (see Camera) or set a camera area.
@@ -107,6 +141,7 @@ You don't need to remember any of this: the pause menu has a **Camera Controls**
 ## Requirements
 
 - The **Harmony** Workshop item (id `2898033283`).
+- Recommended: **[Mod List](https://github.com/Zambie223/PlateUp-ModList) 0.2.0 or later**, for the [settings](#settings).
 - **Online play: every player needs this mod, the same version.** Online play hasn't been tested yet.
 
 ## Compatibility
@@ -123,11 +158,9 @@ However, the mod also keeps very large restaurants working: it extends the area 
 
 ## Known limitations
 
-- The terminal reuses the reroll button's model, relabelled "Floor Plan".
+- The terminal reuses the reroll button's model, relabelled "Floor Plan", with drafting tools in place of its dice.
 - Very large trees two tiles from new floor can still overhang its edge slightly.
 - The game's night lighting only covers tiles up to 16 from the middle of the map; the mod lights anything further out itself.
-- Rain and snow only fall within a fixed area around the original restaurant, so parts of the map built far out stay dry. (It never falls inside rooms.)
-- Doors can only go between two indoor rooms (no side doors to the outside yet).
 - The editor's "reachable from the front door" check looks at rooms and doors, not furniture. A dining room whose only way in is through a kitchen full of counters passes the check, but customers can't get there. The game marks such chairs with a "?".
 - Every apply rebuilds the restaurant's walls and walking paths, which can cause a brief hitch on very large restaurants.
 

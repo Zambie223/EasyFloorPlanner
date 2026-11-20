@@ -77,7 +77,7 @@ namespace EasyFloorPlanner
             area.Encapsulate(new Vector3(minX - SpawnReach, 0f, CustomerSpawnZ));
             box.center = new Vector3(area.center.x, VanillaCentre.y, area.center.z);
             box.size = new Vector3(area.size.x, VanillaSize.y, area.size.z);
-            PathfindingBudget.Fit(area.size.x * area.size.z > VanillaSize.x * VanillaSize.z + 0.5f);
+            PathfindingBudget.Fit(area.size.x * area.size.z > VanillaSize.x * VanillaSize.z * PathfindingBudget.BigFactor);
         }
     }
 
@@ -93,7 +93,7 @@ namespace EasyFloorPlanner
     /// frames; with 1000, 104 customers, 0 waiting, 0 warps, 42.1 ms frames. The budget is only
     /// spent while paths are pending, so it costs nothing without a backlog.
     ///
-    /// So while the restaurant's navmesh is bigger than vanilla's it's raised to
+    /// So while the restaurant's walkable area is more than <see cref="BigFactor"/> times vanilla's it's raised to
     /// <see cref="BigRestaurant"/> (never lowered if something else set it higher), and put back
     /// when the restaurant is vanilla-sized again (unless something else changed it since).
     /// Set wherever the restaurant is built (host and clients), since customers walk on each
@@ -102,6 +102,17 @@ namespace EasyFloorPlanner
     internal static class PathfindingBudget
     {
         public const int BigRestaurant = 1000;
+
+        /// <summary>
+        /// How much bigger than vanilla's 40 x 20 the walkable area must be. The area always includes
+        /// a 4-tile yard and the customer spawn strip, so a vanilla-sized restaurant comes to about 810
+        /// (just over vanilla's 800); 0.3.1 compared against 800 and so raised the budget for every
+        /// restaurant (found in the 2026-11-19 test review). The big restaurant measured above: 2,052.
+        /// </summary>
+        public const float BigFactor = 1.5f;
+
+        /// <summary>Whether the budget is currently raised by this mod (self-test).</summary>
+        public static bool Raised => _ours;
 
         private static int _original = -1;
         private static bool _ours;
