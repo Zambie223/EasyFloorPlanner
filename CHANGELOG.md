@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2 (2026-11-19)
+
+- **Fixed: panning changed the zoom.** Panning towards the back of a big restaurant zoomed out a little (and towards the front, in). The camera now pans parallel to the ground.
+
 ## 0.4.1 (2026-11-19)
 
 - **Fixed: the back of a very big restaurant wasn't drawn** during play (the editor showed it): the camera stopped drawing about 60 units away, which a restaurant grown towards the size limit goes past. The camera now draws as far as the ground on screen reaches.

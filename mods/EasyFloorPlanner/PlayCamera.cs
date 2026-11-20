@@ -24,10 +24,12 @@ namespace EasyFloorPlanner
     /// FramingTransposer that frames the target group. Three of its settings are adjusted each
     /// frame, without touching the group's targets (so vanilla's framing logic keeps working):
     /// - m_GroupFramingSize: how much of the screen the group fills. Larger zooms in.
-    /// - m_ScreenX / m_ScreenY: where on screen the group's centre goes (0..1, y = 0 at the top).
-    ///   This pans: under group framing the transposer ignores m_TrackedObjectOffset. Cinemachine
-    ///   clamps the screen position to -0.5..1.5, so pan past one screen (big restaurants, 2026-11-19)
-    ///   shifts the camera itself with a CinemachineCameraOffset extension we add (PanBeyondScreen).
+    /// - m_ScreenY: where on screen the group's centre goes (0..1, y = 0 at the top), for the HUD margin.
+    /// - Panning moves the camera parallel to the ground, with a CinemachineCameraOffset extension we
+    ///   add (PanOffset). Under group framing the transposer ignores m_TrackedObjectOffset, and the
+    ///   screen position (used to pan until 0.4.1) only reaches one screen and moves the camera along
+    ///   its tilted up axis, which changes its height: panning to the back zoomed out a little
+    ///   (user report 2026-11-19, 0.4.1).
     /// - The lens's far clip: raised when the ground on screen is further than the game's 60 (FarClip).
     /// - m_MinimumFOV / m_MaximumFOV: the game's limits (10..25 degrees) are widened only in
     ///   proportion to the zoom, so the default view is unchanged.
@@ -58,7 +60,7 @@ namespace EasyFloorPlanner
         private const float StickZoomRate = 1.4f;   // e-folds per second at full stick
         private const float StickPanRate = 0.8f;    // screens per second at full stick
         private const float BasePanLimit = 0.15f;   // screens, at normal zoom
-        private const float MaxPanLimit = 1f;       // Cinemachine's screen-position range allows one screen
+        private const float MaxPanLimit = 1f;       // the usual range when fully zoomed in (big restaurants allow more: ClampPan)
         private const float FollowMinZoom = 1.05f;  // follow only acts when zoomed in
         private const float FollowEdge = 0.22f;     // keep chefs at least this far (viewport) from the edges
         private const float FollowRate = 5f;
@@ -209,15 +211,12 @@ namespace EasyFloorPlanner
             float zoom = editor ? EditorZoom : Zoom;
             float hud = editor ? 0f : HudFraction;
             Vector2 pan = editor ? Vector2.zero : Pan;
-            // Up to a screen of pan moves where the restaurant sits on screen (Cinemachine's screen
-            // position only goes that far); any more shifts the camera itself (see PanBeyondScreen).
-            Vector2 onScreen = new Vector2(Mathf.Clamp(pan.x, -MaxPanLimit, MaxPanLimit), Mathf.Clamp(pan.y, -MaxPanLimit, MaxPanLimit));
             Framing.m_GroupFramingSize = VanillaSize * (1f - hud) * zoom;
-            Framing.m_ScreenX = Mathf.Clamp(VanillaScreenX - onScreen.x, -0.5f, 1.5f);
-            Framing.m_ScreenY = Mathf.Clamp(VanillaScreenY - hud / 2f + onScreen.y, -0.5f, 1.5f);
+            Framing.m_ScreenX = VanillaScreenX;
+            Framing.m_ScreenY = VanillaScreenY - hud / 2f;
             if (Offset != null)
             {
-                Offset.m_Offset = PanBeyondScreen(pan - onScreen);
+                Offset.m_Offset = PanOffset(pan);
             }
             // Widen the game's FOV limits only as far as the zoom (and HUD margin) needs.
             Framing.m_MinimumFOV = VanillaMinFov / Mathf.Max(zoom, 1f);
@@ -424,14 +423,15 @@ namespace EasyFloorPlanner
         }
 
         /// <summary>
-        /// Pan past what the screen position can do, as a sideways / upward shift of the camera in
-        /// its own frame (CinemachineCameraOffset, after the Body stage): a screen is the view's
-        /// width / height at the distance to the ground under the middle of the screen. The framing
-        /// transposer's tracked-object offset can't do this: with a target group it frames the
-        /// group's bounds and ignores that offset (found 2026-11-19, self-test 2026-11-19_222519:
-        /// 12 screens of pan didn't move the camera).
+        /// The pan as a move of the camera parallel to the ground, so its height (and so the zoom)
+        /// stays the same. One screen across is the view's width at the distance to the ground under
+        /// the middle of the screen; one screen up is its height there, stretched by the camera's
+        /// slant (the ground is tilted away from the camera). It's handed to Cinemachine in camera
+        /// space (CinemachineCameraOffset, after the Body stage). The framing transposer's
+        /// tracked-object offset can't do this: with a target group it frames the group's bounds and
+        /// ignores that offset (self-test 2026-11-19_222519).
         /// </summary>
-        private static Vector3 PanBeyondScreen(Vector2 screens)
+        private static Vector3 PanOffset(Vector2 screens)
         {
             Camera cam = Camera.main;
             if (cam == null || screens == Vector2.zero)
@@ -444,7 +444,13 @@ namespace EasyFloorPlanner
                 return Vector3.zero;
             }
             float height = 2f * distance * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
-            return new Vector3(screens.x * height * cam.aspect, screens.y * height, 0f); // camera space
+            Vector3 right = cam.transform.right;
+            right.y = 0f;
+            Vector3 ahead = cam.transform.forward;
+            ahead.y = 0f;
+            float slant = Mathf.Max(-cam.transform.forward.y, 0.2f); // sine of the pitch
+            Vector3 world = right.normalized * (screens.x * height * cam.aspect) + ahead.normalized * (screens.y * height / slant);
+            return Quaternion.Inverse(cam.transform.rotation) * world; // camera space, as the extension wants
         }
 
         // ================================================================= input

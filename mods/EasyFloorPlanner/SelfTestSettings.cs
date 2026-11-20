@@ -506,11 +506,21 @@ namespace EasyFloorPlanner
                 return;
             }
             Log($"at the limit: far clip {cam.farClipPlane:0} (game's {PlayCamera.TestVanillaFar:0}), deepest restaurant corner on screen {deepest:0}.");
+            _heightUnpanned = cam.transform.position.y;
             Check(deepest < cam.farClipPlane, $"the game's camera draws all of a restaurant at the size limit (deepest corner on screen {deepest:0}, far clip {cam.farClipPlane:0})");
             Shot("06g-limit-game-camera");
         }
 
         // ---- panning across a restaurant at the size limit (pan range grows with the restaurant)
+
+        /// <summary>The camera's height before panning: panning must keep it (user report 2026-11-19, 0.4.1: panning to the back zoomed out).</summary>
+        private static float _heightUnpanned;
+
+        private void CheckPanKeepsHeight(string where)
+        {
+            float h = Camera.main != null ? Camera.main.transform.position.y : 0f;
+            Check(Mathf.Abs(h - _heightUnpanned) < 0.25f, $"panning {where} keeps the camera's height, so the zoom doesn't change (height {h:0.00}, {_heightUnpanned:0.00} unpanned)");
+        }
 
         private bool LimitEdgeOnScreen(bool back, out float y)
         {
@@ -537,6 +547,7 @@ namespace EasyFloorPlanner
                 return;
             }
             Check(LimitEdgeOnScreen(true, out y), $"at the size limit, panning reaches the back of the restaurant (back edge at viewport y {y:0.00}, pan {PlayCamera.Pan.y:0.0} screens)");
+            CheckPanKeepsHeight("to the back");
             Shot("06h-limit-pan-back");
         }
 
@@ -553,6 +564,7 @@ namespace EasyFloorPlanner
                 return;
             }
             Check(LimitEdgeOnScreen(false, out y), $"and the front (front edge at viewport y {y:0.00}, pan {PlayCamera.Pan.y:0.0} screens)");
+            CheckPanKeepsHeight("to the front");
             Shot("06i-limit-pan-front");
             PlayCamera.TestSet(1f, Vector2.zero);
         }
