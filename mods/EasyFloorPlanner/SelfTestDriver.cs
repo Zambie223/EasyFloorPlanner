@@ -316,6 +316,7 @@ namespace EasyFloorPlanner
             Check(LayoutWriter.IsAvailable, "GetReachability reflection resolved");
             Check(LayoutEdits.CheckConnectivity(_baseline) == null, "vanilla layout passes our connectivity rule");
             Check(LayoutViews().Length == 1, $"exactly one LayoutView before edits (found {LayoutViews().Length})");
+            Check(PlayCamera.IndicatorScale > 0.999f, $"a vanilla-sized restaurant keeps the table indicators at the game's size (scale {PlayCamera.IndicatorScale:0.00})");
             Check(!PathfindingBudget.Raised, $"a vanilla-sized restaurant keeps the game's path budget ({UnityEngine.AI.NavMesh.pathfindingIterationsPerFrame} per frame)");
             // Validates our copy of the decorators' formulas against what vanilla placed: on a fresh
             // run the load check must have found nothing to change.

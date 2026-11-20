@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3 (2026-11-19)
+
+- **Table seat counts shrink with the restaurant:** when the restaurant is shown smaller than the base game ever shows it (a very big restaurant, or zoomed out), the number over each table shrinks with it instead of covering the screen. Normal restaurants at the normal zoom look exactly as before.
+
 ## 0.4.2 (2026-11-19)
 
 - **Fixed: panning changed the zoom.** Panning towards the back of a big restaurant zoomed out a little (and towards the front, in). The camera now pans parallel to the ground.

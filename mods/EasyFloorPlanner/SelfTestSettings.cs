@@ -507,6 +507,12 @@ namespace EasyFloorPlanner
             }
             Log($"at the limit: far clip {cam.farClipPlane:0} (game's {PlayCamera.TestVanillaFar:0}), deepest restaurant corner on screen {deepest:0}.");
             _heightUnpanned = cam.transform.position.y;
+            // Table indicators shrink with the restaurant (user request 2026-11-19).
+            var tables = UnityEngine.Object.FindObjectsOfType<TableIndicatorView>();
+            IndicatorZoomScale scaled = tables.Select(t => t.GetComponent<IndicatorZoomScale>()).FirstOrDefault(s => s != null);
+            Log($"at the limit: table indicator scale {PlayCamera.IndicatorScale:0.00}, {tables.Length} indicator view(s).");
+            Check(PlayCamera.IndicatorScale < 0.9f && (tables.Length == 0 || (scaled != null && scaled.transform.localScale.x < 0.9f * scaled.TestOriginal.x + 0.0001f)),
+                $"at the size limit, table indicators shrink with the restaurant (scale {PlayCamera.IndicatorScale:0.00}; {tables.Length} indicator(s), {(scaled != null ? "scaled" : "none found")})");
             Check(deepest < cam.farClipPlane, $"the game's camera draws all of a restaurant at the size limit (deepest corner on screen {deepest:0}, far clip {cam.farClipPlane:0})");
             Shot("06g-limit-game-camera");
         }

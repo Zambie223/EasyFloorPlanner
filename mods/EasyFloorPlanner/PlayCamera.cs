@@ -72,6 +72,14 @@ namespace EasyFloorPlanner
         /// <summary>Pan in screens (+x shows more to the right, +y more towards the back).</summary>
         public static Vector2 Pan { get; private set; }
 
+        /// <summary>
+        /// How much to shrink screen-size indicators (IndicatorZoomScale): a tile's size on screen
+        /// over the smallest the game's own camera makes it (its maximum distance and field of view,
+        /// with our HUD margin), at most 1, at least <see cref="MinIndicatorScale"/>.
+        /// </summary>
+        public static float IndicatorScale { get; private set; } = 1f;
+        private const float MinIndicatorScale = 0.3f;
+
         /// <summary>Keep this machine's chefs in view while zoomed in.</summary>
         public static bool Follow { get; private set; }
 
@@ -179,6 +187,7 @@ namespace EasyFloorPlanner
             if (!inRestaurant || !FindCamera())
             {
                 Restore();
+                IndicatorScale = 1f;
                 Zoom = 1f;
                 Pan = Vector2.zero;
                 EditorZoom = 1f;
@@ -204,6 +213,7 @@ namespace EasyFloorPlanner
             EditorZoom = Mathf.Clamp(EditorZoom, MinZoom, MaxZoom);
             Pan = ClampPan(Pan, Zoom);
             ApplySettings(editor);
+            IndicatorScale = ComputeIndicatorScale();
         }
 
         private static void ApplySettings(bool editor)
@@ -326,6 +336,24 @@ namespace EasyFloorPlanner
         internal static float TestFarClip => Vcam != null ? Vcam.m_Lens.FarClipPlane : 0f;
         internal static float TestVanillaFar => VanillaFar;
 #endif
+
+        private static float ComputeIndicatorScale()
+        {
+            Camera cam = Camera.main;
+            if (cam == null || Framing == null || VanillaMaxFov <= 0f)
+            {
+                return 1f;
+            }
+            if (!new Plane(Vector3.up, Vector3.zero).Raycast(cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f)), out float distance))
+            {
+                return 1f;
+            }
+            // A tile's height on screen now, and at the game's widest view (as a share of the screen).
+            float now = 1f / (2f * distance * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad));
+            float widestFov = VanillaMaxFov / (1f - HudFraction);
+            float widest = 1f / (2f * Framing.m_MaximumDistance * Mathf.Tan(widestFov * 0.5f * Mathf.Deg2Rad));
+            return Mathf.Clamp(now / widest, MinIndicatorScale, 1f);
+        }
 
         public static void SetLayout(LayoutBlueprint bp)
         {
