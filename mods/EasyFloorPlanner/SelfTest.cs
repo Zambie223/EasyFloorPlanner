@@ -1,6 +1,7 @@
 #if DEBUG
 using System;
 using System.IO;
+using System.Linq;
 using HarmonyLib;
 using Kitchen;
 using KitchenMods;
@@ -34,6 +35,9 @@ namespace EasyFloorPlanner
 
         /// <summary>Restaurant setting to start the run in (matched against its name), or null for the HQ's current one.</summary>
         public static string ForceSetting { get; private set; }
+
+        /// <summary>Survey mode: only record the setting's ground (GroundSurvey), then quit.</summary>
+        public static bool Survey { get; private set; }
 
         /// <summary>
         /// Removes other mods' Harmony patches on LayoutView for this test session only (in memory),
@@ -108,11 +112,27 @@ namespace EasyFloorPlanner
             }
 
             ShotDir = lines[1].Trim();
-            QuitWhenDone = lines.Length > 2 && lines[2].Trim().Equals("quit", StringComparison.OrdinalIgnoreCase);
-            // Optional line 4: "setting=<name>" starts the run in that restaurant setting (e.g. Turbo).
-            ForceSetting = lines.Length > 3 && lines[3].Trim().StartsWith("setting=", StringComparison.OrdinalIgnoreCase)
-                ? lines[3].Trim().Substring("setting=".Length).Trim()
-                : null;
+            // Options after the first two lines, in any order: "quit"; "setting=<name>" starts the run
+            // in that restaurant setting (e.g. Turbo); "survey" only surveys the ground (GroundSurvey).
+            QuitWhenDone = false;
+            ForceSetting = null;
+            Survey = false;
+            foreach (string raw in lines.Skip(2))
+            {
+                string line = raw.Trim();
+                if (line.Equals("quit", StringComparison.OrdinalIgnoreCase))
+                {
+                    QuitWhenDone = true;
+                }
+                else if (line.StartsWith("setting=", StringComparison.OrdinalIgnoreCase))
+                {
+                    ForceSetting = line.Substring("setting=".Length).Trim();
+                }
+                else if (line.Equals("survey", StringComparison.OrdinalIgnoreCase))
+                {
+                    Survey = true;
+                }
+            }
             try
             {
                 Directory.CreateDirectory(ShotDir);
@@ -123,7 +143,7 @@ namespace EasyFloorPlanner
                 ShotDir = null;
             }
             Active = true;
-            ModMain.Log($"[SELFTEST] ACTIVE. Saves are blocked. Screenshots: {ShotDir ?? "(none)"}. Quit when done: {QuitWhenDone}. Setting: {ForceSetting ?? "(HQ's current)"}");
+            ModMain.Log($"[SELFTEST] ACTIVE. Saves are blocked. Screenshots: {ShotDir ?? "(none)"}. Quit when done: {QuitWhenDone}. Setting: {ForceSetting ?? "(HQ's current)"}.{(Survey ? " Survey only." : "")}");
         }
     }
 

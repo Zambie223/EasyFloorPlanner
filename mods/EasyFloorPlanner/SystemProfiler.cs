@@ -71,6 +71,7 @@ namespace EasyFloorPlanner
             harmony.Patch(_update, prefix: new HarmonyMethod(typeof(SystemProfiler), nameof(Prefix)),
                 postfix: new HarmonyMethod(typeof(SystemProfiler), nameof(Postfix)));
             Active = true;
+            CustomerMovementProbe.TryStart(harmony);
             ModMain.Log($"Profiler on (profile.flag found): timing every game system for {PhaseSeconds:0} s of night and {PhaseSeconds:0} s of day in a restaurant.");
         }
 
@@ -171,12 +172,13 @@ namespace EasyFloorPlanner
     {
         protected override void OnUpdate()
         {
-            if (!SystemProfiler.Active)
+            if (!SystemProfiler.Active && !CustomerMovementProbe.Active)
             {
                 return;
             }
             int phase = !Has<SKitchenMarker>() ? 0 : Has<SIsNightTime>() ? 1 : Has<SIsDayTime>() ? 2 : 0;
             SystemProfiler.Frame(phase);
+            CustomerMovementProbe.Frame(phase == 2);
         }
     }
 }

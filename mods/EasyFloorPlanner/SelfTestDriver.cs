@@ -215,7 +215,7 @@ namespace EasyFloorPlanner
 
         private void RunStep(int index)
         {
-            Action[] steps =
+            Action[] steps = SelfTest.Survey ? new Action[] { StepGroundSurvey } : new Action[]
             {
                 StepBaseline,
                 StepGrow, StepVerifyGrow,
@@ -226,6 +226,8 @@ namespace EasyFloorPlanner
                 StepGrowFar, StepVerifyGrowFar,
                 StepShrinkFar, StepVerifyShrinkFar,
                 StepGrowWest, StepVerifyGrowWest, StepShrinkWest, StepVerifyShrinkWest,
+                StepGrowToLimit, StepVerifyGrowToLimit, StepLimitGround, StepLimitEditorOpen, StepLimitShotWest, StepLimitShotNorth, StepLimitEditorClose,
+                StepShrinkFromLimit, StepVerifyShrinkFromLimit,
                 StepBulldozeScenery, StepVerifyBulldoze, StepShrinkBulldoze,
                 StepRefusals,
                 StepRoundTrip,
@@ -903,6 +905,293 @@ namespace EasyFloorPlanner
             {
                 Vector3 source = SPerformTableUpdate.DefaultPathingSource;
                 Check((source - new Vector3(-15f, 0f, 0f)).sqrMagnitude < 0.01f, $"chair pathing source back to vanilla's (-15, 0, 0) after shrinking ({source})");
+            }
+        }
+
+        // ---- out to the size limit: a strip west to x = -MaxExtent and one north to y = +MaxExtent ----
+        // West is where customers spawn (Bounds.min.x - 10 +/- 3); north is away from the street.
+        // Checks the navmesh reaches both ends and the customer spawn, that customers can still walk
+        // in, logs how long the navmesh rebuild took, screenshots the world edge, and shrinks back.
+
+        private static List<(LayoutPosition src, LayoutPosition dst)> _limitStrips = new List<(LayoutPosition, LayoutPosition)>();
+        private static LayoutPosition _limitWest, _limitNorth, _limitNorthEntrance;
+        private static int _limitHash;
+        private static bool _haveLimit;
+
+        private static List<(LayoutPosition, LayoutPosition)> GrowStrip(LayoutBlueprint trial, LayoutPosition from, LayoutPosition step, Func<LayoutPosition, bool> more)
+        {
+            var strip = new List<(LayoutPosition, LayoutPosition)>();
+            LayoutPosition src = from;
+            while (more(src))
+            {
+                LayoutPosition dst = src + step;
+                if (LayoutEdits.TogglePaint(trial, src, dst, _ => false) != null)
+                {
+                    return null;
+                }
+                strip.Add((src, dst));
+                src = dst;
+            }
+            return strip;
+        }
+
+        private void StepGrowToLimit()
+        {
+            int limit = LayoutEdits.MaxExtent;
+            LayoutBlueprint bp = ReadLayout();
+            _limitHash = FloorPlanSerializer.Hash(bp);
+            var inside = bp.Tiles.Where(t => LayoutHelpers.IsInside(t.Value) && t.Value.Type != RoomType.Garden && !bp.GetFeatures(t.Key).Any()).Select(t => t.Key).ToList();
+            LayoutBlueprint trial = new LayoutBlueprint(bp);
+            List<(LayoutPosition, LayoutPosition)> west = null, north = null;
+            // A strip must start from a tile people can walk to (an edge tile walled in by counters
+            // would cut the whole strip off; that's what failed the first two runs' north check).
+            LayoutPosition? door = FrontInside(bp);
+            var probe = new NavMeshPath();
+            bool Reachable(LayoutPosition t) => door.HasValue
+                && NavMesh.SamplePosition((Vector3)door.Value, out NavMeshHit a, 0.5f, NavMesh.AllAreas)
+                && NavMesh.SamplePosition((Vector3)t, out NavMeshHit b, 0.3f, NavMesh.AllAreas)
+                && NavMesh.CalculatePath(a.position, b.position, NavMesh.AllAreas, probe) && probe.status == NavMeshPathStatus.PathComplete;
+            foreach (int y in inside.Select(p => p.y).Distinct().OrderBy(y => Math.Abs(y)))
+            {
+                var edge = new LayoutPosition(inside.Where(p => p.y == y).Min(p => p.x), y);
+                if (!Reachable(edge))
+                {
+                    continue;
+                }
+                var attempt = new LayoutBlueprint(trial);
+                west = GrowStrip(attempt, edge, new LayoutPosition(-1, 0), p => p.x > -limit);
+                if (west != null)
+                {
+                    trial = attempt;
+                    _limitWest = west.Count > 0 ? west.Last().Item2 : edge;
+                    break;
+                }
+            }
+            foreach (int x in inside.Select(p => p.x).Distinct().OrderBy(x => Math.Abs(x)))
+            {
+                var edge = new LayoutPosition(x, inside.Where(p => p.x == x).Max(p => p.y));
+                if (!Reachable(edge))
+                {
+                    continue;
+                }
+                var attempt = new LayoutBlueprint(trial);
+                north = GrowStrip(attempt, edge, new LayoutPosition(0, 1), p => p.y < limit);
+                if (north != null)
+                {
+                    trial = attempt;
+                    _limitNorthEntrance = edge;
+                    _limitNorth = north.Count > 0 ? north.Last().Item2 : edge;
+                    break;
+                }
+            }
+            if (west == null || north == null)
+            {
+                Fail($"couldn't grow strips to the size limit ({limit}): west {(west == null ? "refused" : "ok")}, north {(north == null ? "refused" : "ok")}");
+                return;
+            }
+            string beyond = LayoutEdits.TogglePaint(new LayoutBlueprint(trial), _limitWest, _limitWest + new LayoutPosition(-1, 0), _ => false);
+            Check(beyond != null && beyond.Contains("maximum"), $"growing past x = -{limit} is refused ({beyond ?? "allowed"})");
+            _limitStrips = west.Concat(north).ToList();
+            Log($"limit grow: west to {Fmt(_limitWest)} ({west.Count} tiles), north to {Fmt(_limitNorth)} ({north.Count} tiles); {trial.Tiles.Count} tiles in all.");
+            Apply(trial);
+            _haveLimit = true;
+        }
+
+        private void StepVerifyGrowToLimit()
+        {
+            if (!_haveLimit)
+            {
+                return;
+            }
+            bool covered = NavMesh.SamplePosition((Vector3)_limitWest, out NavMeshHit _, 0.3f, NavMesh.AllAreas)
+                           && NavMesh.SamplePosition((Vector3)_limitNorth, out NavMeshHit _, 0.3f, NavMesh.AllAreas);
+            if (!covered && StepElapsed < 10f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Log($"INFO navmesh rebuild for the full-size layout took {NavmeshRebuildTiming.LastMs:0} ms.");
+            Check(NavMesh.SamplePosition((Vector3)_limitWest, out NavMeshHit _, 0.3f, NavMesh.AllAreas), $"navmesh covers the far west tile {Fmt(_limitWest)}");
+            Check(NavMesh.SamplePosition((Vector3)_limitNorth, out NavMeshHit _, 0.3f, NavMesh.AllAreas), $"navmesh covers the far north tile {Fmt(_limitNorth)}");
+            Bounds b = CurrentBounds();
+            foreach (Vector3 spawn in new[] { new Vector3(b.min.x - 13f, 0f, -7f), new Vector3(b.min.x - 10f, 0f, -6f), new Vector3(b.min.x - 7f, 0f, -5f) })
+            {
+                Check(NavMesh.SamplePosition(spawn, out NavMeshHit _, 0.5f, NavMesh.AllAreas), $"customer spawn area {spawn} is on the navmesh");
+            }
+            LayoutPosition? door = FrontInside(ReadLayout());
+            Vector3 source = SPerformTableUpdate.DefaultPathingSource;
+            if (door.HasValue && NavMesh.SamplePosition(source, out NavMeshHit s, 0.5f, NavMesh.AllAreas)
+                && NavMesh.SamplePosition((Vector3)door.Value, out NavMeshHit d, 0.5f, NavMesh.AllAreas))
+            {
+                var path = new NavMeshPath();
+                Check(NavMesh.CalculatePath(s.position, d.position, NavMesh.AllAreas, path) && path.status == NavMeshPathStatus.PathComplete,
+                    $"customers can walk from their spawn area {source} to the front door");
+                foreach ((LayoutPosition far, LayoutPosition entrance) in new[] { (_limitWest, _limitStrips[0].src), (_limitNorth, _limitNorthEntrance) })
+                {
+                    bool sampled = NavMesh.SamplePosition((Vector3)far, out NavMeshHit f, 0.5f, NavMesh.AllAreas);
+                    bool ok = sampled && NavMesh.CalculatePath(d.position, f.position, NavMesh.AllAreas, path) && path.status == NavMeshPathStatus.PathComplete;
+                    Check(ok, $"walkable from the front door to {Fmt(far)}");
+                    if (!ok)
+                    {
+                        Vector3 end = path.corners.Length > 0 ? path.corners[path.corners.Length - 1] : Vector3.zero;
+                        Entity occupant = TileManager.GetOccupant((Vector3)entrance);
+                        string what = occupant == default ? "nothing" : HasComponent<CAppliance>(occupant)
+                            ? $"appliance {EntityManager.GetComponentData<CAppliance>(occupant).ID}" : $"entity {occupant.Index}";
+                        Log($"INFO path to {Fmt(far)}: status {path.status}, stops at {end}; the strip starts from {Fmt(entrance)}, where there's {what}.");
+                    }
+                }
+            }
+            CheckCameraMarkers(b, "at the size limit");
+            Shot("06c-size-limit");
+        }
+
+        // Ground under the full-size restaurant (GroundExtender): in a setting with a ground box,
+        // nothing within the restaurant plus GroundExtender.Margin may be left without ground.
+        private static GroundSurvey _limitSurvey;
+
+        private void StepLimitGround()
+        {
+            if (!_haveLimit)
+            {
+                return;
+            }
+            if (_limitSurvey == null)
+            {
+                if (StepElapsed < 1.5f)
+                {
+                    Retry(0.5f); // the extender looks again 1 s after a layout change
+                    return;
+                }
+                _limitSurvey = new GroundSurvey();
+                _limitSurvey.Render();
+                Retry(0.5f);
+                return;
+            }
+            LayoutBlueprint bp = ReadLayout();
+            var inside = bp.Tiles.Where(t => LayoutHelpers.IsInside(t.Value)).Select(t => t.Key).ToList();
+            var area = Rect.MinMaxRect(inside.Min(p => p.x) - 0.5f - GroundExtender.Margin, inside.Min(p => p.y) - 0.5f - GroundExtender.Margin,
+                                       inside.Max(p => p.x) + 0.5f + GroundExtender.Margin, inside.Max(p => p.y) + 0.5f + GroundExtender.Margin);
+            bool hasGround = GroundSurvey.GroundRenderers().Any(r => r.name != "EasyFloorPlanner Ground Extension");
+            string png = SelfTest.ShotDir != null ? Path.Combine(SelfTest.ShotDir, "06f-ground-at-limit.png") : null;
+            (int voids, int n) = _limitSurvey.CountVoid(area, png);
+            _limitSurvey.Dispose();
+            _limitSurvey = null;
+            if (hasGround)
+            {
+                Check(GroundExtender.StripCount > 0, $"the ground is extended under the full-size restaurant ({GroundExtender.StripCount} strip(s))");
+                Check(voids == 0, $"no tile within {GroundExtender.Margin:0} of the restaurant is without ground ({voids} of {n} tiles checked)");
+            }
+            else
+            {
+                Check(GroundExtender.StripCount == 0, $"a setting without a ground box gets no ground strips ({GroundExtender.StripCount})");
+                Log($"INFO this setting has no ground box (street-type); {voids} of {n} tiles near the restaurant show the backdrop, as in vanilla.");
+            }
+        }
+
+        // Top-down editor views of both far ends (what a player sees out there), then close.
+        private static bool _limitCloseSent;
+
+        private void StepLimitEditorOpen()
+        {
+            if (!_haveLimit)
+            {
+                return;
+            }
+            List<Entity> players = AllWith<CPlayer>();
+            FloorPlanService service = World.GetExistingSystem<FloorPlanService>();
+            if (players.Count > 0 && service != null)
+            {
+                service.RequestOpen(players[0]);
+            }
+        }
+
+        private bool LimitEditorReady()
+        {
+            FloorPlanView view = FloorPlanView.TestInstance;
+            if ((view == null || !view.TestReady) && StepElapsed < 10f)
+            {
+                Retry(0.5f);
+                return false;
+            }
+            if (view == null || !view.TestReady)
+            {
+                Log("INFO the editor didn't open for the size-limit screenshots; skipped.");
+                return false;
+            }
+            view.TestSetVisible(true);
+            return true;
+        }
+
+        private void LimitShot(LayoutPosition at, string name)
+        {
+            if (!_haveLimit || !LimitEditorReady())
+            {
+                return;
+            }
+            FloorPlanCamera.TestMoveTo((Vector3)at);
+            if (StepElapsed < 2.5f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            Camera cam = Camera.main;
+            Log($"INFO view of {Fmt(at)}: camera at {(cam != null ? cam.transform.position.ToString() : "none")}, far clip {(cam != null ? cam.farClipPlane : 0f):0}.");
+            Shot(name);
+        }
+
+        private void StepLimitShotWest() => LimitShot(_limitWest, "06d-limit-west");
+
+        private void StepLimitShotNorth() => LimitShot(_limitNorth, "06e-limit-north");
+
+        private void StepLimitEditorClose()
+        {
+            if (!_haveLimit)
+            {
+                return;
+            }
+            FloorPlanView view = FloorPlanView.TestInstance;
+            if (AllWith<CFloorPlanSession>().Count > 0)
+            {
+                if (!_limitCloseSent)
+                {
+                    _limitCloseSent = true;
+                    view?.TestStopWatching();
+                }
+                if (StepElapsed < 5f)
+                {
+                    Retry(0.25f);
+                    return;
+                }
+                Fail("the editor didn't close after the size-limit screenshots");
+            }
+        }
+
+        private void StepShrinkFromLimit()
+        {
+            if (!_haveLimit)
+            {
+                return;
+            }
+            LayoutBlueprint bp = ReadLayout();
+            for (int i = _limitStrips.Count - 1; i >= 0; i--)
+            {
+                string refused = LayoutEdits.TogglePaint(bp, _limitStrips[i].src, _limitStrips[i].dst, _ => false);
+                if (refused != null)
+                {
+                    Fail($"shrinking {Fmt(_limitStrips[i].dst)} back refused: {refused}");
+                    _haveLimit = false;
+                    return;
+                }
+            }
+            Apply(bp);
+        }
+
+        private void StepVerifyShrinkFromLimit()
+        {
+            if (_haveLimit)
+            {
+                Check(FloorPlanSerializer.Hash(ReadLayout()) == _limitHash, "after shrinking from the size limit the layout is as it was");
+                CheckCameraMarkers(CurrentBounds(), "after shrinking from the size limit");
             }
         }
 
@@ -2173,6 +2462,67 @@ namespace EasyFloorPlanner
                 }
             }
             Check(wrong == 0, $"spread-out chair checks agree with a full check ({wrong} of {chairs.Count} differ; {pathable} pathable)");
+        }
+
+        // ---- survey mode: what this setting uses as ground (GroundSurvey) ----
+        private static GroundSurvey _survey;
+        private static string _surveySetting;
+        private static int _surveyStage;
+
+        private void StepGroundSurvey()
+        {
+            if (StepElapsed < 3f)
+            {
+                Retry(0.5f); // let the setting's scenery views finish building
+                return;
+            }
+            if (_survey != null)
+            {
+                // The survey camera rendered on the frames since: read and save it.
+                if (_surveyStage == 0 && SelfTest.ShotDir != null)
+                {
+                    _survey.Save(Path.Combine(SelfTest.ShotDir, $"ground-{_surveySetting}.png"), _surveySetting);
+                }
+                if (_surveyStage == 0)
+                {
+                    // Seam experiment: extension under the ground, close-up of the ground's +x edge.
+                    _survey.Dispose();
+                    _survey = new GroundSurvey();
+                    float? edge = _survey.AddTestExtension();
+                    if (edge.HasValue)
+                    {
+                        _surveyStage = 1;
+                        _survey.RenderCloseUp(edge.Value, 0f);
+                        Log($"SURVEY seam test: close-up of the ground's +x edge at x = {edge.Value:0.0}.");
+                        Retry(0.5f);
+                        return;
+                    }
+                    Log("SURVEY seam test: no big flat ground box in this setting.");
+                }
+                else if (SelfTest.ShotDir != null)
+                {
+                    _survey.SaveRaw(Path.Combine(SelfTest.ShotDir, $"seam-{_surveySetting}.png"));
+                }
+                _survey.Dispose();
+                _survey = null;
+                _surveyStage = 0;
+                Shot($"survey-{_surveySetting}");
+                return;
+            }
+            string setting = "unknown";
+            if (TryGetSingleton(out CSetting cs))
+            {
+                KitchenData.RestaurantSetting rs = KitchenData.GameData.Main.Get<KitchenData.RestaurantSetting>().FirstOrDefault(s => s.ID == cs.RestaurantSetting);
+                setting = rs != null ? rs.name : $"id {cs.RestaurantSetting}";
+            }
+            Bounds b = CurrentBounds();
+            Log($"SURVEY current setting {setting}; restaurant bounds {b.min.x:0}..{b.max.x:0} x {b.min.z:0}..{b.max.z:0}.");
+            GroundSurvey.LogSettings();
+            GroundSurvey.LogRenderers();
+            _surveySetting = setting;
+            _survey = new GroundSurvey();
+            _survey.Render();
+            Retry(0.5f);
         }
 
         private float _fovBefore;

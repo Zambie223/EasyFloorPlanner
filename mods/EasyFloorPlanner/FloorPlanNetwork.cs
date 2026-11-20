@@ -23,7 +23,8 @@ namespace EasyFloorPlanner
         private const int FormatVersion = 4;
         private const int ViewFields = 18;
         private const int ResponseFields = 6;
-        private const int MaxTiles = 16384;
+        /// <summary>Every tile the editor can address (MaxExtent + 2 each way), so a full-size layout always fits.</summary>
+        private const int MaxTiles = (2 * (LayoutEdits.MaxExtent + 2) + 1) * (2 * (LayoutEdits.MaxExtent + 2) + 1);
         private const int MaxFeatures = 4096;
         private const int MaxStatusLength = 512;
         private const int MaxLabelLength = 64;

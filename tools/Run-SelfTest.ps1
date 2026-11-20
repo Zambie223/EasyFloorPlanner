@@ -27,7 +27,9 @@ param(
     [int]$TimeoutMinutes = 12,
     [switch]$NoBuild,
     # Optional restaurant setting to start the run in, e.g. -Setting Turbo (default: whatever HQ has selected).
-    [string]$Setting
+    [string]$Setting,
+    # Survey only: record what the setting uses as ground (logs + a top-down picture), then quit. About 2 minutes.
+    [switch]$Survey
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,6 +100,7 @@ Say "saves backed up to $backup"
 $expiry = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + ($TimeoutMinutes * 60) + 300
 $flagLines = @("$expiry", $shots, 'quit')
 if ($Setting) { $flagLines += "setting=$Setting" }
+if ($Survey) { $flagLines += 'survey' }
 [IO.File]::WriteAllLines((Join-Path $modDir 'selftest.flag'), $flagLines)
 $script:launchTime = Get-Date
 Start-Process 'steam://rungameid/1599600'

@@ -107,6 +107,15 @@ namespace EasyFloorPlanner
             AnchorRoot.transform.position = p;
         }
 
+        /// <summary>Self-test: centres the view on a world point (clamped like <see cref="Move"/>).</summary>
+        internal static void TestMoveTo(Vector3 point)
+        {
+            if (AnchorRoot != null)
+            {
+                Move(point - AnchorRoot.transform.position);
+            }
+        }
+
         /// <summary>Call every Update and LateUpdate while active: keeps our targets in the group.</summary>
         public static void Maintain()
         {

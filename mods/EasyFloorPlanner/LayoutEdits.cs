@@ -14,9 +14,11 @@ namespace EasyFloorPlanner
     internal static class LayoutEdits
     {
         // Maximum restaurant extent, in tiles from the origin. Vanilla's fixed navmesh area is lifted
-        // by NavmeshAreaPatch, so this is only a sanity limit. The navmesh is rebuilt on every edit,
-        // and its cost grows with area. Raise it once batching (rebuild when leaving edit mode) exists.
-        public const int MaxExtent = 30;
+        // by NavmeshAreaPatch and TileManager has no fixed grid, so this is a sanity limit. The
+        // navmesh is rebuilt once per Apply (logged by NavmeshRebuildTiming), and its cost grows with
+        // area. Raised from 30 to 63 on 2026-11-19 (user's choice): 127 x 127 tiles, which keeps the
+        // editor's network tile cap (FloorPlanSerializer.MaxTiles, derived from this) bounded.
+        public const int MaxExtent = 63;
 
         /// <summary>
         /// Paints <paramref name="target"/>. An outdoor tile (not stored, or stored as NoRoom) joins

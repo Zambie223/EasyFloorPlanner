@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 (2026-11-19)
 
 - **Smoother nights in very big restaurants:** at night the game re-checks every frame whether customers can walk to every chair. With hundreds of chairs that made building at night laggy. In restaurants with more than 64 chairs the mod now spreads those checks over a few frames, so a chair's tick or cross can take up to half a second to update after you move something. The check at the start of the day is still complete.
 - **Seat counts over tables** at night are worked out from cached paths in very big restaurants (more than 64 seats), recomputed every 30 frames instead of every frame, so a count can take up to half a second to update. The start of the day still uses a full check.
+- **Customers no longer teleport around in very big restaurants.** In restaurants bigger than the game's original area, the mod raises how much path-finding Unity does each frame (the game's default was too low for big restaurants with many customers, so customers waited for a path and the game then warped them).
+- **Bigger restaurants:** the maximum size is now 63 tiles from the centre in any direction (was 30). Players on older versions can still play together; they just can't paint past 30.
+- **No more black edges around very big restaurants:** in settings with grass or snow, the ground is extended to at least 40 tiles around the restaurant, matching the original ground exactly. Street settings (City, Turbo) keep their dark backdrop, as in the base game.
 - **Lighting of far rooms** in big restaurants uses far fewer textures, and its work is spread over frames instead of a hitch four times a second.
-- **Optional profiler** for performance reports: off unless a file named `profile.flag` is in the mod's folder when the game starts. It then writes to the game log which game systems take the most time during 30 s of night and 30 s of day.
+- **Optional profiler** for performance reports: off unless a file named `profile.flag` is in the mod's folder when the game starts. It then writes to the game log which game systems take the most time during 30 s of night and 30 s of day. During the first day with customers it also measures customer movement for 90 s, temporarily switching the path-finding budget between the game's default and the raised one, then puts it back.
 - **Fixed:** the game log reported version 0.2.0 for 0.3.0.
 
 ## 0.3.0 (2026-11-17)

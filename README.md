@@ -99,7 +99,9 @@ You don't need to remember any of this: the pause menu has a **Camera Controls**
 - **Street settings (such as Turbo):** the neighbouring buildings, the street and the front border move to fit the new size, so new floor never ends up inside a neighbouring building.
 - **Every floor tile must be reachable from the front door,** through rooms and doors (hatches don't count).
 - **The front of the restaurant stays the front:** it can't grow toward the street. The front door and other special doors can't be moved.
-- **Maximum size:** up to 30 tiles from the centre in any direction.
+- **Maximum size:** up to 63 tiles from the centre in any direction (127 x 127 tiles).
+  - In settings with grass or snow, the ground is extended under very large restaurants, matching the original, so there are no black edges. Street settings (City, Turbo) keep their dark backdrop.
+  - The game's own day camera can't fit a restaurant much wider than about 45 tiles; use the camera zoom and pan (see Camera) or set a camera area.
 - New rooms can be a kitchen or a dining room. Garden tiles can't be edited yet.
 
 ## Requirements

@@ -111,6 +111,9 @@ namespace EasyFloorPlanner
         /// <summary>Self-test: stop overriding (renderers go back to the global map) until resumed.</summary>
         public static bool Suspended { get; set; }
 
+        /// <summary>Fetch the renderer list again on the next frame (new big renderers, e.g. ground strips).</summary>
+        public static void RequestRescan() => NextDiscover = 0f;
+
         /// <summary>Called whenever the lighting map is rebuilt (RoomLayoutMapPatch).</summary>
         public static void SetLayout(LayoutBlueprint bp)
         {

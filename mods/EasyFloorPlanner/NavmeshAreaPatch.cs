@@ -3,6 +3,7 @@ using HarmonyLib;
 using Kitchen;
 using Kitchen.Layouts;
 using UnityEngine;
+using UnityEngine.AI;
 
 namespace EasyFloorPlanner
 {
@@ -76,6 +77,81 @@ namespace EasyFloorPlanner
             area.Encapsulate(new Vector3(minX - SpawnReach, 0f, CustomerSpawnZ));
             box.center = new Vector3(area.center.x, VanillaCentre.y, area.center.z);
             box.size = new Vector3(area.size.x, VanillaSize.y, area.size.z);
+            PathfindingBudget.Fit(area.size.x * area.size.z > VanillaSize.x * VanillaSize.z + 0.5f);
+        }
+    }
+
+    /// <summary>
+    /// Unity computes NavMeshAgent paths a few A* iterations at a time:
+    /// NavMesh.pathfindingIterationsPerFrame, default 100, shared by every agent. The game never
+    /// changes it. In a restaurant bigger than vanilla's navmesh area with many customers, paths
+    /// queue up, customers stand still, and vanilla's CustomerView.CheckForStuck re-requests the
+    /// path and, after 10 s, warps them to their target (what players see as teleporting).
+    ///
+    /// Measured 2026-11-19 in a 972-tile restaurant, 30 s windows of a day (CustomerMovementProbe):
+    /// with 100, 141 customers, 39.6 waiting for a path on average, 86 stuck warps, 44.1 ms
+    /// frames; with 1000, 104 customers, 0 waiting, 0 warps, 42.1 ms frames. The budget is only
+    /// spent while paths are pending, so it costs nothing without a backlog.
+    ///
+    /// So while the restaurant's navmesh is bigger than vanilla's it's raised to
+    /// <see cref="BigRestaurant"/> (never lowered if something else set it higher), and put back
+    /// when the restaurant is vanilla-sized again (unless something else changed it since).
+    /// Set wherever the restaurant is built (host and clients), since customers walk on each
+    /// machine's own navmesh.
+    /// </summary>
+    internal static class PathfindingBudget
+    {
+        public const int BigRestaurant = 1000;
+
+        private static int _original = -1;
+        private static bool _ours;
+
+        public static void Fit(bool big)
+        {
+            int now = NavMesh.pathfindingIterationsPerFrame;
+            if (big && !_ours && now < BigRestaurant)
+            {
+                _original = now;
+                _ours = true;
+                NavMesh.pathfindingIterationsPerFrame = BigRestaurant;
+                ModMain.Log($"Big restaurant: customer path budget raised from {now} to {BigRestaurant} per frame, so customers don't wait for paths (and get warped).");
+            }
+            else if (!big && _ours)
+            {
+                _ours = false;
+                if (now == BigRestaurant && _original > 0)
+                {
+                    NavMesh.pathfindingIterationsPerFrame = _original;
+                    ModMain.Log($"Restaurant back within vanilla's area: customer path budget back to {_original} per frame.");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Logs how long each navmesh rebuild takes (it runs once per layout change or load and grows with
+    /// the restaurant's area), so the pause on Apply is measured rather than guessed.
+    /// </summary>
+    [HarmonyPatch(typeof(LayoutView), nameof(LayoutView.UpdateNavmesh))]
+    internal static class NavmeshRebuildTiming
+    {
+        private static readonly System.Diagnostics.Stopwatch Watch = new System.Diagnostics.Stopwatch();
+
+        /// <summary>The last rebuild's duration in milliseconds (the self-test reads it).</summary>
+        public static double LastMs { get; private set; }
+
+        private static void Prefix() => Watch.Restart();
+
+        private static void Postfix(LayoutView __instance)
+        {
+            Watch.Stop();
+            LastMs = Watch.Elapsed.TotalMilliseconds;
+            Vector3 size = Vector3.zero;
+            foreach (BoxCollider box in __instance.GetComponents<BoxCollider>())
+            {
+                size = Vector3.Max(size, box.size);
+            }
+            ModMain.Log($"Navmesh rebuilt in {LastMs:0} ms (walkable area {size.x:0} x {size.z:0}).");
         }
     }
 }
