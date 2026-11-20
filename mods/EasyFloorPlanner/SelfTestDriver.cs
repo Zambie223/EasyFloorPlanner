@@ -234,7 +234,7 @@ namespace EasyFloorPlanner
                 StepGrowFar, StepVerifyGrowFar,
                 StepShrinkFar, StepVerifyShrinkFar,
                 StepGrowWest, StepVerifyGrowWest, StepShrinkWest, StepVerifyShrinkWest,
-                StepGrowToLimit, StepVerifyGrowToLimit, StepLimitGround,
+                StepGrowToLimit, StepVerifyGrowToLimit, StepLimitGround, StepLimitFarClip, StepLimitPanBack, StepLimitPanFront,
                 StepShrinkFromLimit, StepVerifyShrinkFromLimit,
                 StepBulldozeScenery, StepVerifyBulldoze, StepShrinkBulldoze,
                 StepRefusals,
@@ -251,6 +251,7 @@ namespace EasyFloorPlanner
                 StepUxOpen, StepUxReadouts, StepUxBigBox, StepUxPalette, StepUxApplyKeepOpen, StepUxVerifyKeptOpen,
                 StepUxRevert, StepUxVerifyReverted, StepUxVerifyDiscarded, StepUxVerifyRemembered, StepUxReopenDefault, StepUxVerifyDefault,
                 StepHostOnly,
+                StepPauseRequest, StepVerifyPauseRequest,
                 StepGrowFarWest, StepVerifyFarLighting,
                 StepWeatherForce, StepRainMeasure, StepWeatherShot, StepWeatherSetting, StepWeatherOff,
                 StepShrinkFarWest,
@@ -300,8 +301,15 @@ namespace EasyFloorPlanner
 
         // ---------------- steps ----------------
 
+        private static Action _playerSettings;
+
         private void StepBaseline()
         {
+            // The player's own settings would change what the tests see; run on the defaults and
+            // put the player's back at the end.
+            _playerSettings = Settings.TestSnapshot();
+            Log($"player's settings (restored at the end): {Settings.Describe()}.");
+            Settings.TestDefaults();
             _baseline = ReadLayout();
             Log($"baseline: {_baseline.Tiles.Count} tiles, {_baseline.Features.Count} features, {_baseline.Rooms().Count} rooms.");
             Log(DumpGrid(_baseline));
@@ -4463,6 +4471,9 @@ namespace EasyFloorPlanner
         private static void Finish()
         {
             _stage = Stage.Done;
+            _playerSettings?.Invoke();
+            _playerSettings = null;
+            Log($"settings restored to the player's: {Settings.Describe()}.");
             Log($"DONE pass={_pass} fail={_fail} (steps took {(_stepsStartedAt < 0f ? 0f : UnityEngine.Time.realtimeSinceStartup - _stepsStartedAt):0} s)");
             if (SelfTest.QuitWhenDone)
             {

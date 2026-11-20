@@ -1753,7 +1753,7 @@ namespace EasyFloorPlanner
             // Plain dashes: the game's font has no "|" or bullet glyphs (they render as "Y").
             string label = CurrentMode == Mode.Camera ? "" : "Brush: ";
             HudTitle.text = $"FLOOR PLAN   -   {mode}   -   {label}<color=#{colour}>{CurrentBrushLabel}</color>{watchers}";
-            HudHelp.text = HelpText(CurrentMode, UsesMouse);
+            HudHelp.text = Settings.HideControls ? "" : HelpText(CurrentMode, UsesMouse);
 
             string status;
             if (BoxStart.HasValue && CurrentMode != Mode.Walls)
@@ -1824,8 +1824,8 @@ namespace EasyFloorPlanner
                 detail = brush.Length > 0 ? $"   -   {mode}   -   Brush: {brush}" : $"   -   {mode}";
             }
             HudTitle.text = $"FLOOR PLAN   -   Watching {who}{detail}";
-            HudHelp.text = (UsesMouse ? "WASD: move view   Esc: stop watching" : "Stick: move view   Back: stop watching")
-                           + $"\nOnly {who} can change the layout. Press the terminal again when they finish to edit it yourself.";
+            HudHelp.text = (Settings.HideControls ? "" : (UsesMouse ? "WASD: move view   Esc: stop watching\n" : "Stick: move view   Back: stop watching\n"))
+                           + $"Only {who} can change the layout. Press the terminal again when they finish to edit it yourself.";
             string summary = DraftSummary();
             HudStatus.text = Unreachable.Count > 0
                 ? $"<color=#{EditorColours.UnreachableHex}>{EditorColours.UnreachableName} floor can't be reached from the front door yet.</color>"

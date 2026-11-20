@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 (2026-11-19)
+
+- **Fixed: the back of a very big restaurant wasn't drawn** during play (the editor showed it): the camera stopped drawing about 60 units away, which a restaurant grown towards the size limit goes past. The camera now draws as far as the ground on screen reaches.
+- **Pan across big restaurants:** the play camera's pan range now grows with the restaurant, so you can look at every edge of a restaurant bigger than the screen (it used to stop about one screen from the middle).
+- **Floor Planner in the pause menu** (at night): opens the editor, or watches it if someone else is editing, without walking to the terminal. A restaurant grown to the limit could leave the terminal out of sight.
+- **New setting, Hide controls legend** (off by default): hides the editor's two lines of control hints.
+- **Compatibility:** works online with 0.4.0 players (the network messages haven't changed), but the pause menu's Floor Planner button only works when the host has 0.4.1.
+
 ## 0.4.0 (2026-11-19)
 
 - **Doors to the outside:** the Door brush now works on the building's side and back walls. Customers and chefs can both use them (customers still queue at the front door).

@@ -76,6 +76,15 @@ namespace EasyFloorPlanner
                 },
                 new Dictionary<string, object>
                 {
+                    ["id"] = "hideControls",
+                    ["type"] = "bool",
+                    ["label"] = "Hide controls legend",
+                    ["description"] = "Hides the editor's two lines of control hints.",
+                    ["get"] = (Func<bool>)(() => Settings.HideControls),
+                    ["set"] = (Action<bool>)Settings.SetHideControls,
+                },
+                new Dictionary<string, object>
+                {
                     ["id"] = "whoCanEdit",
                     ["type"] = "choice",
                     ["label"] = "Who can edit",

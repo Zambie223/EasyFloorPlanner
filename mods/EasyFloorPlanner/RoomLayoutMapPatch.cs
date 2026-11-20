@@ -69,6 +69,7 @@ namespace EasyFloorPlanner
                 FarLighting.SetLayout(blueprint);
                 GroundExtender.SetLayout(blueprint);
                 WeatherTiler.SetLayout(blueprint);
+                PlayCamera.SetLayout(blueprint);
                 PlayCamera.Install(); // a restaurant is being built on this machine: make sure the play camera runs
             }
             return texture;

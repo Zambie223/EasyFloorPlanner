@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>EasyFloorPlanner</AssemblyName>
     <RootNamespace>EasyFloorPlanner</RootNamespace>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
     <!-- Folder name under <game>\Mods\ -->
     <ModFolderName>EasyFloorPlanner</ModFolderName>
     <!-- Harmony is required: NavmeshAreaPatch lifts vanilla's fixed navmesh area (and the Debug-only

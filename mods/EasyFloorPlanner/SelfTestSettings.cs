@@ -216,6 +216,15 @@ namespace EasyFloorPlanner
 
             // The controller help names every wall brush (the front door was missing).
             Check(FloorPlanView.TestHelpFor(walls: true, mouse: false).Contains("front door"), "the controller help in wall mode lists the front door brush");
+            bool hideWas = Settings.HideControls;
+            Settings.SetHideControls(false);
+            view.TestEndDrag(); // refreshes the HUD
+            bool shown = view.TestHelp.Length > 0;
+            Settings.SetHideControls(true);
+            view.TestEndDrag();
+            bool hidden = view.TestHelp.Length == 0;
+            Settings.SetHideControls(hideWas);
+            Check(shown && hidden, "\"Hide controls legend\" hides the editor's control hints, and they show without it");
 
             // Pan speed scales the editor's WASD / stick panning.
             Vector3 start = FloorPlanCamera.TestAnchor;
@@ -459,6 +468,121 @@ namespace EasyFloorPlanner
             Log($"settings restored: {Settings.Describe()}.");
         }
 
+        // ---- the restaurant at the size limit, through the game's own camera
+
+        /// <summary>
+        /// User report 2026-11-19: at the limit, the back of the restaurant wasn't drawn outside the
+        /// editor (the camera's far clip of 60). StepLimitGround missed it: its survey camera is
+        /// its own orthographic one. This checks the game's camera: every corner of the restaurant
+        /// that's on screen must be nearer than the far clip.
+        /// </summary>
+        private void StepLimitFarClip()
+        {
+            if (!_haveLimit)
+            {
+                return;
+            }
+            Camera cam = Camera.main;
+            if (cam == null)
+            {
+                Fail("no main camera");
+                return;
+            }
+            LayoutBlueprint bp = ReadLayout();
+            var inside = bp.Tiles.Where(t => LayoutHelpers.IsInside(t.Value)).Select(t => t.Key).ToList();
+            float x0 = inside.Min(p => p.x) - 0.5f, x1 = inside.Max(p => p.x) + 0.5f, z0 = inside.Min(p => p.y) - 0.5f, z1 = inside.Max(p => p.y) + 0.5f;
+            float deepest = 0f;
+            foreach (Vector3 c in new[] { new Vector3(x0, 0f, z0), new Vector3(x1, 0f, z0), new Vector3(x0, 0f, z1), new Vector3(x1, 0f, z1) })
+            {
+                Vector3 v = cam.WorldToViewportPoint(c);
+                if (v.z > 0f && v.x >= 0f && v.x <= 1f && v.y >= 0f && v.y <= 1f)
+                {
+                    deepest = Mathf.Max(deepest, v.z);
+                }
+            }
+            if (deepest >= cam.farClipPlane && StepElapsed < 5f)
+            {
+                Retry(0.5f);
+                return;
+            }
+            Log($"at the limit: far clip {cam.farClipPlane:0} (game's {PlayCamera.TestVanillaFar:0}), deepest restaurant corner on screen {deepest:0}.");
+            Check(deepest < cam.farClipPlane, $"the game's camera draws all of a restaurant at the size limit (deepest corner on screen {deepest:0}, far clip {cam.farClipPlane:0})");
+            Shot("06g-limit-game-camera");
+        }
+
+        // ---- panning across a restaurant at the size limit (pan range grows with the restaurant)
+
+        private bool LimitEdgeOnScreen(bool back, out float y)
+        {
+            LayoutBlueprint bp = ReadLayout();
+            var inside = bp.Tiles.Where(t => LayoutHelpers.IsInside(t.Value)).Select(t => t.Key).ToList();
+            float z = back ? inside.Max(p => p.y) : inside.Min(p => p.y);
+            float x = (inside.Min(p => p.x) + inside.Max(p => p.x)) / 2f;
+            Vector3 v = Camera.main != null ? Camera.main.WorldToViewportPoint(new Vector3(x, 0f, z)) : new Vector3(-1f, -1f, -1f);
+            y = v.y;
+            return v.z > 0f && v.y > 0.05f && v.y < 0.95f;
+        }
+
+        private void StepLimitPanBack()
+        {
+            if (!_haveLimit)
+            {
+                return;
+            }
+            // Pan towards the back a screen at a time, as holding the stick does.
+            if (!LimitEdgeOnScreen(true, out float y) && StepElapsed < 10f)
+            {
+                PlayCamera.TestSet(1f, PlayCamera.Pan + new Vector2(0f, 0.5f));
+                Retry(0.5f);
+                return;
+            }
+            Check(LimitEdgeOnScreen(true, out y), $"at the size limit, panning reaches the back of the restaurant (back edge at viewport y {y:0.00}, pan {PlayCamera.Pan.y:0.0} screens)");
+            Shot("06h-limit-pan-back");
+        }
+
+        private void StepLimitPanFront()
+        {
+            if (!_haveLimit)
+            {
+                return;
+            }
+            if (!LimitEdgeOnScreen(false, out float y) && StepElapsed < 15f)
+            {
+                PlayCamera.TestSet(1f, PlayCamera.Pan - new Vector2(0f, 0.5f));
+                Retry(0.5f);
+                return;
+            }
+            Check(LimitEdgeOnScreen(false, out y), $"and the front (front edge at viewport y {y:0.00}, pan {PlayCamera.Pan.y:0.0} screens)");
+            Shot("06i-limit-pan-front");
+            PlayCamera.TestSet(1f, Vector2.zero);
+        }
+
+        // ---- the pause menu's "Floor Planner" (the request it sends; the button itself needs the menu)
+
+        private void StepPauseRequest()
+        {
+            if (AllWith<CFloorPlanSession>().Count > 0 && StepElapsed < 8f)
+            {
+                Retry(0.25f);
+                return;
+            }
+            List<Entity> players = AllWith<CPlayer>();
+            int id = EntityManager.GetComponentData<CPlayer>(players[0]).ID;
+            Controllers.InputSourceIdentifier.DefaultInputSource.MakeRequest(id, FloorPlanPauseButton.OpenRequest);
+            Log($"sent the pause menu's floor plan request for player {id}.");
+        }
+
+        private void StepVerifyPauseRequest()
+        {
+            FloorPlanView view = ReadyEditor("pause menu request");
+            if (view == null)
+            {
+                return;
+            }
+            Check(AllWith<CFloorPlanSession>().Count == 1, "the pause menu's request opened the editor on the host");
+            view.TestCancel();
+        }
+
         // ---- host-only editing
 
         private void StepHostOnly()
@@ -480,7 +604,7 @@ namespace EasyFloorPlanner
             CPlayer other = host;
             other.InputSource = host.InputSource + 1;
             Check(FloorPlanService.MayEdit(host) && !FloorPlanService.MayEdit(other), "host only: the host's players may edit, other machines' players may not");
-            Check(FloorPlanTerminalLabelPatch.TestLastPrice == FloorPlanIds.LabelHostOnly, $"host only: the terminal tells the clients (label {FloorPlanTerminalLabelPatch.TestLastPrice}, expected {FloorPlanIds.LabelHostOnly})");
+            Check(FloorPlanTerminalLabelPatch.LastLabel == FloorPlanIds.LabelHostOnly, $"host only: the terminal tells the clients (label {FloorPlanTerminalLabelPatch.LastLabel}, expected {FloorPlanIds.LabelHostOnly})");
             var title = HarmonyLib.AccessTools.Field(typeof(RerollBlueprintView), "Title");
             bool floorPlan = UnityEngine.Object.FindObjectsOfType<RerollBlueprintView>()
                 .Any(v => title?.GetValue(v) is TMPro.TextMeshPro tmp && tmp.text == "Floor Plan");

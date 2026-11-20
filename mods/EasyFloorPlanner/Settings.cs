@@ -39,6 +39,9 @@ namespace EasyFloorPlanner
         /// <summary>Apply commits the draft and the editor stays open (Esc / Back closes it).</summary>
         public static bool ApplyKeepsOpen { get; private set; }
 
+        /// <summary>The editor's two lines of control hints are hidden (off by default, so new players see them).</summary>
+        public static bool HideControls { get; private set; }
+
         /// <summary>Host's setting: who may open the editor. Anyone can still watch.</summary>
         public static WhoCanEdit Editors { get; private set; } = WhoCanEdit.Everyone;
 
@@ -57,13 +60,14 @@ namespace EasyFloorPlanner
             EditorPalette = GetEnum("Palette", Palette.Standard);
             RememberTools = GetInt("RememberTools", 0) == 1;
             ApplyKeepsOpen = GetInt("ApplyKeepsOpen", 0) == 1;
+            HideControls = GetInt("HideControls", 0) == 1;
             Editors = GetEnum("WhoCanEdit", WhoCanEdit.Everyone);
             ModMain.Log($"Settings: {Describe()}.");
         }
 
         public static string Describe() =>
             $"zoom speed {ZoomSpeed}%, pan speed {PanSpeed}%, zoom-out {ZoomOut}, weather everywhere {WeatherEverywhere}, palette {EditorPalette}, "
-            + $"remember tools {RememberTools}, apply keeps the editor open {ApplyKeepsOpen}, who can edit {Editors}, camera follow {PlayCamera.Follow}";
+            + $"remember tools {RememberTools}, apply keeps the editor open {ApplyKeepsOpen}, hide controls {HideControls}, who can edit {Editors}, camera follow {PlayCamera.Follow}";
 
         public static void SetZoomSpeed(int v) => SetInt("ZoomSpeed", ZoomSpeed = ClampSpeed(v));
         public static void SetPanSpeed(int v) => SetInt("PanSpeed", PanSpeed = ClampSpeed(v));
@@ -72,6 +76,7 @@ namespace EasyFloorPlanner
         public static void SetPalette(Palette v) => SetInt("Palette", (int)(EditorPalette = v));
         public static void SetRememberTools(bool v) => SetInt("RememberTools", (RememberTools = v) ? 1 : 0);
         public static void SetApplyKeepsOpen(bool v) => SetInt("ApplyKeepsOpen", (ApplyKeepsOpen = v) ? 1 : 0);
+        public static void SetHideControls(bool v) => SetInt("HideControls", (HideControls = v) ? 1 : 0);
         public static void SetEditors(WhoCanEdit v) => SetInt("WhoCanEdit", (int)(Editors = v));
 
         /// <summary>Writes the settings to disk (PlayerPrefs only flushes on Save or on quit).</summary>
@@ -121,16 +126,34 @@ namespace EasyFloorPlanner
         }
 
 #if DEBUG
+        /// <summary>Self-test: every setting at its default (the tests expect the default behaviour).</summary>
+        internal static void TestDefaults()
+        {
+            SetZoomSpeed(100);
+            SetPanSpeed(100);
+            SetZoomOut(ZoomOutLimit.Normal);
+            SetWeatherEverywhere(true);
+            SetPalette(Palette.Standard);
+            SetRememberTools(false);
+            SetApplyKeepsOpen(false);
+            SetHideControls(false);
+            SetEditors(WhoCanEdit.Everyone);
+            PlayCamera.SetFollow(false, toast: false);
+        }
+
         /// <summary>Self-test: every setting's current value, to put back afterwards.</summary>
         internal static Action TestSnapshot()
         {
             int zoom = ZoomSpeed, pan = PanSpeed;
             ZoomOutLimit zoomOut = ZoomOut;
-            bool weather = WeatherEverywhere, remember = RememberTools, keep = ApplyKeepsOpen;
+            bool weather = WeatherEverywhere, remember = RememberTools, keep = ApplyKeepsOpen, hide = HideControls;
             Palette palette = EditorPalette;
             WhoCanEdit editors = Editors;
+            bool hideControls = HideControls, follow = PlayCamera.Follow;
             return () =>
             {
+                SetHideControls(hideControls);
+                PlayCamera.SetFollow(follow, toast: false);
                 SetZoomSpeed(zoom);
                 SetPanSpeed(pan);
                 SetZoomOut(zoomOut);
@@ -138,6 +161,7 @@ namespace EasyFloorPlanner
                 SetPalette(palette);
                 SetRememberTools(remember);
                 SetApplyKeepsOpen(keep);
+                SetHideControls(hide);
                 SetEditors(editors);
             };
         }

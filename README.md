@@ -17,7 +17,7 @@ A PlateUp! mod that lets you reshape your restaurant during the night: grow or s
 
 ## How it works
 
-- **Opening the editor:** at night, a **Floor Plan** terminal stands outside, in front of your restaurant near the practice-mode pad. Press interact on it. Only one player can edit at a time. The host can allow only their own players to edit (the **Who can edit** [setting](#settings)); other players' terminal then reads **Host only**, and they can still watch.
+- **Opening the editor:** at night, a **Floor Plan** terminal stands outside, in front of your restaurant near the practice-mode pad. Press interact on it, or choose **Floor Planner** in the pause menu (at night), which works wherever you are. Only one player can edit at a time. The host can allow only their own players to edit (the **Who can edit** [setting](#settings)); other players' terminal then reads **Host only**, and they can still watch.
 - **Watching:** while someone is editing, the terminal reads **Watch**. Press it to see their draft live on your screen: the same overlay, their cursor in their player colour, and their current brush. Watching is read-only; press Back (Esc on keyboard) to stop. Players on the editor's own screen (local co-op) already see the draft, so the terminal does nothing for them.
 - **Drafting:** nothing changes until you apply. Your edits are drawn as a coloured overlay on the floor:
   - room colours: blue shades for kitchens, warm shades for dining rooms, purple for other rooms;
@@ -87,7 +87,7 @@ The mod also helps with the view during normal play:
 | Reset the view | Middle click | Click the right stick |
 | Follow my chef on / off | F | Hold RB + click the right stick |
 
-At normal zoom you can pan a little (enough to see past the edges); zoom in to pan further.
+At normal zoom you can pan a little (enough to see past the edges), and further when zoomed in. In a restaurant bigger than the screen you can always pan far enough to see every edge of it.
 
 **Follow** keeps your chef (or all of this machine's chefs, in local co-op) away from the screen edges while you're zoomed in. It's off by default, and the setting is remembered. Turn it off when you want the view to stay where you put it.
 
@@ -109,6 +109,7 @@ The settings are in **Pause → Mods**, on the settings gear next to Easy Floor 
 | Furthest zoom-out | Normal | Normal, Further or Furthest. Further out widens the camera's view, so the edges of the screen look a little stretched. |
 | Editor colours | Standard | Standard, or Colourblind-friendly: colours chosen to stay distinct with red-green and blue-yellow colour blindness. Kitchens blue, dining rooms orange, unreachable floor white, removed floor black, doors orange, the front door blue, hatches black. |
 | Remember mode and brush | Off | The editor opens with the mode and brush you last closed it with, instead of floor painting. |
+| Hide controls legend | Off | Hides the two lines of control hints at the bottom of the editor, for when you know the controls. |
 | Apply keeps the editor open | Off | Applying rebuilds the restaurant and leaves the editor open; Cancel closes it. |
 | Who can edit | Everyone | Host only: only the players on the host's computer can open the editor. Everyone can still watch. |
 | Weather everywhere | On | Rain and snow over all of a big restaurant. Off: only near the middle, as in the base game. |

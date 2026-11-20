@@ -392,17 +392,14 @@ namespace EasyFloorPlanner
     [HarmonyPatch(typeof(RerollBlueprintView), "UpdateData", typeof(RerollBlueprintView.ViewData))]
     internal static class FloorPlanTerminalLabelPatch
     {
-#if DEBUG
-        internal static int TestLastPrice;
-#endif
+        /// <summary>The terminal's last label on this machine (clients learn "host only" from it).</summary>
+        internal static int LastLabel;
 
         private static void Postfix(RerollBlueprintView __instance, RerollBlueprintView.ViewData data, TextMeshPro ___Title)
         {
             if (FloorPlanIds.IsTerminalLabel(data.Price))
             {
-#if DEBUG
-                TestLastPrice = data.Price;
-#endif
+                LastLabel = data.Price;
                 FloorPlanHologram.Apply(__instance); // drafting tools instead of the reroll dice
             }
             if (___Title == null)

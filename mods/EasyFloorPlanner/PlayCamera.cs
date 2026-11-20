@@ -5,6 +5,7 @@ using System.Reflection;
 using Cinemachine;
 using Controllers;
 using Kitchen;
+using Kitchen.Layouts;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -24,8 +25,10 @@ namespace EasyFloorPlanner
     /// frame, without touching the group's targets (so vanilla's framing logic keeps working):
     /// - m_GroupFramingSize: how much of the screen the group fills. Larger zooms in.
     /// - m_ScreenX / m_ScreenY: where on screen the group's centre goes (0..1, y = 0 at the top).
-    ///   This pans: under group framing the transposer ignores m_TrackedObjectOffset, so the
-    ///   screen position is the only offset that works. Cinemachine clamps it to -0.5..1.5.
+    ///   This pans: under group framing the transposer ignores m_TrackedObjectOffset. Cinemachine
+    ///   clamps the screen position to -0.5..1.5, so pan past one screen (big restaurants, 2026-11-19)
+    ///   shifts the camera itself with a CinemachineCameraOffset extension we add (PanBeyondScreen).
+    /// - The lens's far clip: raised when the ground on screen is further than the game's 60 (FarClip).
     /// - m_MinimumFOV / m_MaximumFOV: the game's limits (10..25 degrees) are widened only in
     ///   proportion to the zoom, so the default view is unchanged.
     /// The HUD margin frames the restaurant into the top (1 - HudFraction) of the screen.
@@ -80,7 +83,18 @@ namespace EasyFloorPlanner
         private static CinemachineVirtualCamera Vcam;
         private static CinemachineFramingTransposer Framing;
         private static bool HaveVanilla;
-        private static float VanillaSize, VanillaScreenX, VanillaScreenY, VanillaMinFov, VanillaMaxFov;
+        private static float VanillaSize, VanillaScreenX, VanillaScreenY, VanillaMinFov, VanillaMaxFov, VanillaFar;
+        /// <summary>Our Cinemachine camera offset on the game's virtual camera (pan beyond one screen).</summary>
+        private static CinemachineCameraOffset Offset;
+
+        /// <summary>The restaurant's indoor tiles (world x / z), for the pan range. Set whenever the layout is built.</summary>
+        private static Rect? Restaurant;
+
+        /// <summary>The most the pan can go, in screens, whatever the restaurant's size.</summary>
+        private const float MaxRestaurantPan = 12f;
+
+        /// <summary>The furthest the far clip goes (a big restaurant seen at a shallow angle).</summary>
+        private const float MaxFar = 400f;
         private static bool Applied;
 
         private static string Toast;
@@ -195,12 +209,20 @@ namespace EasyFloorPlanner
             float zoom = editor ? EditorZoom : Zoom;
             float hud = editor ? 0f : HudFraction;
             Vector2 pan = editor ? Vector2.zero : Pan;
+            // Up to a screen of pan moves where the restaurant sits on screen (Cinemachine's screen
+            // position only goes that far); any more shifts the camera itself (see PanBeyondScreen).
+            Vector2 onScreen = new Vector2(Mathf.Clamp(pan.x, -MaxPanLimit, MaxPanLimit), Mathf.Clamp(pan.y, -MaxPanLimit, MaxPanLimit));
             Framing.m_GroupFramingSize = VanillaSize * (1f - hud) * zoom;
-            Framing.m_ScreenX = Mathf.Clamp(VanillaScreenX - pan.x, -0.5f, 1.5f);
-            Framing.m_ScreenY = Mathf.Clamp(VanillaScreenY - hud / 2f + pan.y, -0.5f, 1.5f);
+            Framing.m_ScreenX = Mathf.Clamp(VanillaScreenX - onScreen.x, -0.5f, 1.5f);
+            Framing.m_ScreenY = Mathf.Clamp(VanillaScreenY - hud / 2f + onScreen.y, -0.5f, 1.5f);
+            if (Offset != null)
+            {
+                Offset.m_Offset = PanBeyondScreen(pan - onScreen);
+            }
             // Widen the game's FOV limits only as far as the zoom (and HUD margin) needs.
             Framing.m_MinimumFOV = VanillaMinFov / Mathf.Max(zoom, 1f);
             Framing.m_MaximumFOV = Mathf.Min(VanillaMaxFov / ((1f - hud) * Mathf.Min(zoom, 1f)), Settings.MaxFov);
+            Vcam.m_Lens.FarClipPlane = FarClip();
             Applied = true;
         }
 
@@ -213,6 +235,14 @@ namespace EasyFloorPlanner
                 Framing.m_ScreenY = VanillaScreenY;
                 Framing.m_MinimumFOV = VanillaMinFov;
                 Framing.m_MaximumFOV = VanillaMaxFov;
+                if (Offset != null)
+                {
+                    Offset.m_Offset = Vector3.zero;
+                }
+                if (Vcam != null)
+                {
+                    Vcam.m_Lens.FarClipPlane = VanillaFar;
+                }
             }
             Applied = false;
         }
@@ -247,6 +277,9 @@ namespace EasyFloorPlanner
                 return false;
             }
             LastSearch = search;
+            Offset = Vcam.GetComponent<CinemachineCameraOffset>() ?? Vcam.gameObject.AddComponent<CinemachineCameraOffset>();
+            Offset.m_ApplyAfter = CinemachineCore.Stage.Body;
+            Offset.m_Offset = Vector3.zero;
             if (!HaveVanilla)
             {
                 // The game sets these once at startup (GameCreator); nothing else changes them.
@@ -256,15 +289,162 @@ namespace EasyFloorPlanner
                 VanillaScreenY = Framing.m_ScreenY;
                 VanillaMinFov = Framing.m_MinimumFOV;
                 VanillaMaxFov = Framing.m_MaximumFOV;
+                VanillaFar = Vcam.m_Lens.FarClipPlane;
+
                 ModMain.Log($"Play camera: framing {VanillaSize}, screen ({VanillaScreenX}, {VanillaScreenY}), FOV {VanillaMinFov}..{VanillaMaxFov}.");
             }
             return true;
         }
 
+        /// <summary>
+        /// The camera's far clip: the game's (60) unless the ground at the screen's corners is
+        /// further away, then far enough to draw it. User report 2026-11-19: the game's 60 left the
+        /// back of a restaurant grown to the limit undrawn (the camera's dark background showed
+        /// instead), outside the editor, whose top-down view is closer. Cinemachine copies the
+        /// virtual camera's lens to the camera every frame, so it's set there. A frame behind (it
+        /// uses the camera as last drawn), with a margin for things standing on the ground.
+        /// </summary>
+        private static float FarClip()
+        {
+            Camera cam = Camera.main;
+            if (cam == null || VanillaFar <= 0f)
+            {
+                return VanillaFar;
+            }
+            var ground = new Plane(Vector3.up, Vector3.zero);
+            float far = 0f;
+            foreach (Vector2 v in new[] { new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 1f), new Vector2(1f, 1f) })
+            {
+                Ray ray = cam.ViewportPointToRay(new Vector3(v.x, v.y, 0f));
+                float hit = ground.Raycast(ray, out float d) ? d : MaxFar; // a ray above the horizon: as far as allowed
+                // Depth along the view direction, which is what the far clip compares against.
+                far = Mathf.Max(far, hit * Vector3.Dot(ray.direction, cam.transform.forward));
+            }
+            return Mathf.Clamp(far + 10f, VanillaFar, MaxFar);
+        }
+
+#if DEBUG
+        internal static float TestFarClip => Vcam != null ? Vcam.m_Lens.FarClipPlane : 0f;
+        internal static float TestVanillaFar => VanillaFar;
+#endif
+
+        public static void SetLayout(LayoutBlueprint bp)
+        {
+            var inside = bp.Tiles.Where(t => LayoutHelpers.IsInside(t.Value)).Select(t => t.Key).ToList();
+            Restaurant = inside.Count == 0 ? (Rect?)null
+                : Rect.MinMaxRect(inside.Min(p => p.x) - 0.5f, inside.Min(p => p.y) - 0.5f, inside.Max(p => p.x) + 0.5f, inside.Max(p => p.y) + 0.5f);
+        }
+
+        /// <summary>Beyond the usual range, panning stops once that edge of the restaurant is this far inside the screen.</summary>
+        private const float EdgeWall = 0.25f;
+
+        /// <summary>
+        /// The pan range, in screens along each axis: a little at normal zoom, more when zoomed in
+        /// (as before). Past that, panning goes on while the restaurant's edge in that direction is
+        /// still off screen, and is eased back once the edge is more than <see cref="EdgeWall"/>
+        /// inside (user request 2026-11-19: a restaurant much bigger than the screen couldn't be
+        /// looked across). It reads the edges from the camera as drawn, so it doesn't depend on how
+        /// the restaurant sits on screen (a first version assumed it was centred, and stopped short
+        /// of the front at the size limit). The easing (rather than a hard stop) keeps the camera's
+        /// lag from making it overshoot back and forth.
+        /// </summary>
         private static Vector2 ClampPan(Vector2 pan, float zoom)
         {
             float limit = Mathf.Min(BasePanLimit + Mathf.Max(zoom - 1f, 0f) / 2f, MaxPanLimit);
-            return new Vector2(Mathf.Clamp(pan.x, -limit, limit), Mathf.Clamp(pan.y, -limit, limit));
+            if (!RestaurantOnScreen(out float left, out float right, out float bottom, out float top))
+            {
+                return new Vector2(Mathf.Clamp(pan.x, -limit, limit), Mathf.Clamp(pan.y, -limit, limit));
+            }
+            pan = new Vector2(Mathf.Clamp(pan.x, -MaxRestaurantPan, MaxRestaurantPan), Mathf.Clamp(pan.y, -MaxRestaurantPan, MaxRestaurantPan));
+            float ease = Mathf.Min(1f, 4f * Time.unscaledDeltaTime);
+            // +x shows more to the right (the right edge moves left); +y more towards the back (the top edge moves down).
+            if (pan.x > limit && right < 1f - EdgeWall)
+            {
+                pan.x = Mathf.Max(limit, pan.x - (1f - EdgeWall - right) * ease);
+            }
+            if (pan.x < -limit && left > EdgeWall)
+            {
+                pan.x = Mathf.Min(-limit, pan.x + (left - EdgeWall) * ease);
+            }
+            if (pan.y > limit && top < 1f - EdgeWall)
+            {
+                pan.y = Mathf.Max(limit, pan.y - (1f - EdgeWall - top) * ease);
+            }
+            if (pan.y < -limit && bottom > EdgeWall + HudFraction)
+            {
+                pan.y = Mathf.Min(-limit, pan.y + (bottom - EdgeWall - HudFraction) * ease);
+            }
+            return pan;
+        }
+
+        /// <summary>
+        /// Where the restaurant's edges are on screen (viewport units), from its corners. A corner
+        /// behind the camera (the front of a deep restaurant, panned to the back) is off screen in its
+        /// own direction: below for a front corner, above for a back one, and doesn't bound the sides.
+        /// </summary>
+        private static bool RestaurantOnScreen(out float left, out float right, out float bottom, out float top)
+        {
+            left = bottom = float.MaxValue;
+            right = top = float.MinValue;
+            Camera cam = Camera.main;
+            if (cam == null || !Restaurant.HasValue)
+            {
+                return false;
+            }
+            Rect r = Restaurant.Value;
+            bool sides = false;
+            foreach (Vector3 c in new[] { new Vector3(r.xMin, 0f, r.yMin), new Vector3(r.xMax, 0f, r.yMin), new Vector3(r.xMin, 0f, r.yMax), new Vector3(r.xMax, 0f, r.yMax) })
+            {
+                Vector3 v = cam.WorldToViewportPoint(c);
+                bool front = c.z < r.center.y;
+                if (v.z <= 0f)
+                {
+                    bottom = front ? -100f : bottom;
+                    top = front ? top : 100f;
+                    continue;
+                }
+                sides = true;
+                left = Mathf.Min(left, v.x);
+                right = Mathf.Max(right, v.x);
+                if (front)
+                {
+                    bottom = Mathf.Min(bottom, v.y);
+                }
+                else
+                {
+                    top = Mathf.Max(top, v.y);
+                }
+            }
+            if (!sides)
+            {
+                left = -100f;
+                right = 100f;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Pan past what the screen position can do, as a sideways / upward shift of the camera in
+        /// its own frame (CinemachineCameraOffset, after the Body stage): a screen is the view's
+        /// width / height at the distance to the ground under the middle of the screen. The framing
+        /// transposer's tracked-object offset can't do this: with a target group it frames the
+        /// group's bounds and ignores that offset (found 2026-11-19, self-test 2026-11-19_222519:
+        /// 12 screens of pan didn't move the camera).
+        /// </summary>
+        private static Vector3 PanBeyondScreen(Vector2 screens)
+        {
+            Camera cam = Camera.main;
+            if (cam == null || screens == Vector2.zero)
+            {
+                return Vector3.zero;
+            }
+            Ray middle = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+            if (!new Plane(Vector3.up, Vector3.zero).Raycast(middle, out float distance))
+            {
+                return Vector3.zero;
+            }
+            float height = 2f * distance * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            return new Vector3(screens.x * height * cam.aspect, screens.y * height, 0f); // camera space
         }
 
         // ================================================================= input

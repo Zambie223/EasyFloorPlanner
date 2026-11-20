@@ -156,7 +156,7 @@ namespace EasyFloorPlanner
 
     /// <summary>
     /// Adds "Camera Controls" to the pause menu's main page, just above vanilla's Options, in the
-    /// restaurant only. A transpiler, because menu elements get their positions as they're added
+    /// restaurant only (and "Floor Planner" above it at night: FloorPlanPauseButton). A transpiler, because menu elements get their positions as they're added
     /// (a postfix could only add it after "Continue"). The match is narrow: the
     /// <c>ldarg.0; ldarg.0; call get_Localisation; ldstr "MENU_OPTIONS"</c> sequence. If a game
     /// update changes it, the menu is left as it is and a warning is logged.
@@ -168,6 +168,9 @@ namespace EasyFloorPlanner
 
         private static readonly MethodInfo AddSubmenuButton = AccessTools.Method(
             typeof(Menu<MenuAction>), "AddSubmenuButton", new[] { typeof(string), typeof(Type), typeof(bool) });
+
+        private static readonly MethodInfo AddActionButton = AccessTools.Method(
+            typeof(Menu<MenuAction>), "AddButton", new[] { typeof(string), typeof(Action<int>), typeof(int), typeof(float), typeof(float) });
 
         private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
         {
@@ -186,6 +189,7 @@ namespace EasyFloorPlanner
                     codes.InsertRange(i - 3, new[]
                     {
                         first,
+                        new CodeInstruction(OpCodes.Ldarg_1), // player_id
                         new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(CameraControlsButtonPatch), nameof(AddButton))),
                     });
                     return codes;
@@ -195,8 +199,20 @@ namespace EasyFloorPlanner
             return codes;
         }
 
-        private static void AddButton(MainMenu menu)
+        private static void AddButton(MainMenu menu, int playerId)
         {
+            try
+            {
+                if (AddActionButton != null)
+                {
+                    FloorPlanPauseButton.Add(menu, playerId, (label, action) =>
+                        (ButtonElement)AddActionButton.Invoke(menu, new object[] { label, action, 0, 1f, 0.2f }));
+                }
+            }
+            catch (Exception e)
+            {
+                ModMain.LogError($"Failed to add the Floor Planner button: {e}");
+            }
             try
             {
                 if (GameInfo.CurrentScene != SceneType.Kitchen)
