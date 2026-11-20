@@ -42,6 +42,13 @@ namespace EasyFloorPlanner
         /// <summary>The editor's two lines of control hints are hidden (off by default, so new players see them).</summary>
         public static bool HideControls { get; private set; }
 
+        /// <summary>
+        /// Host's setting: customers take from tables and buffets every Nth frame (1 = every frame,
+        /// as in the base game). Fewer checks are faster in very busy restaurants; customers react
+        /// up to N - 1 frames later (CustomerOrderPerformance).
+        /// </summary>
+        public static int OrderCheckEvery { get; private set; } = 1;
+
         /// <summary>Host's setting: who may open the editor. Anyone can still watch.</summary>
         public static WhoCanEdit Editors { get; private set; } = WhoCanEdit.Everyone;
 
@@ -61,13 +68,14 @@ namespace EasyFloorPlanner
             RememberTools = GetInt("RememberTools", 0) == 1;
             ApplyKeepsOpen = GetInt("ApplyKeepsOpen", 0) == 1;
             HideControls = GetInt("HideControls", 0) == 1;
+            OrderCheckEvery = Mathf.Clamp(GetInt("OrderCheckEvery", 1), 1, 4);
             Editors = GetEnum("WhoCanEdit", WhoCanEdit.Everyone);
             ModMain.Log($"Settings: {Describe()}.");
         }
 
         public static string Describe() =>
             $"zoom speed {ZoomSpeed}%, pan speed {PanSpeed}%, zoom-out {ZoomOut}, weather everywhere {WeatherEverywhere}, palette {EditorPalette}, "
-            + $"remember tools {RememberTools}, apply keeps the editor open {ApplyKeepsOpen}, hide controls {HideControls}, who can edit {Editors}, camera follow {PlayCamera.Follow}";
+            + $"remember tools {RememberTools}, apply keeps the editor open {ApplyKeepsOpen}, hide controls {HideControls}, order checks every {OrderCheckEvery} frame(s), who can edit {Editors}, camera follow {PlayCamera.Follow}";
 
         public static void SetZoomSpeed(int v) => SetInt("ZoomSpeed", ZoomSpeed = ClampSpeed(v));
         public static void SetPanSpeed(int v) => SetInt("PanSpeed", PanSpeed = ClampSpeed(v));
@@ -77,6 +85,7 @@ namespace EasyFloorPlanner
         public static void SetRememberTools(bool v) => SetInt("RememberTools", (RememberTools = v) ? 1 : 0);
         public static void SetApplyKeepsOpen(bool v) => SetInt("ApplyKeepsOpen", (ApplyKeepsOpen = v) ? 1 : 0);
         public static void SetHideControls(bool v) => SetInt("HideControls", (HideControls = v) ? 1 : 0);
+        public static void SetOrderCheckEvery(int v) => SetInt("OrderCheckEvery", OrderCheckEvery = Mathf.Clamp(v, 1, 4));
         public static void SetEditors(WhoCanEdit v) => SetInt("WhoCanEdit", (int)(Editors = v));
 
         /// <summary>Writes the settings to disk (PlayerPrefs only flushes on Save or on quit).</summary>
@@ -137,6 +146,7 @@ namespace EasyFloorPlanner
             SetRememberTools(false);
             SetApplyKeepsOpen(false);
             SetHideControls(false);
+            SetOrderCheckEvery(1);
             SetEditors(WhoCanEdit.Everyone);
             PlayCamera.SetFollow(false, toast: false);
         }
@@ -150,8 +160,10 @@ namespace EasyFloorPlanner
             Palette palette = EditorPalette;
             WhoCanEdit editors = Editors;
             bool hideControls = HideControls, follow = PlayCamera.Follow;
+            int orderEvery = OrderCheckEvery;
             return () =>
             {
+                SetOrderCheckEvery(orderEvery);
                 SetHideControls(hideControls);
                 PlayCamera.SetFollow(follow, toast: false);
                 SetZoomSpeed(zoom);

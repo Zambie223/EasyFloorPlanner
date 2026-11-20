@@ -112,6 +112,7 @@ The settings are in **Pause → Mods**, on the settings gear next to Easy Floor 
 | Hide controls legend | Off | Hides the two lines of control hints at the bottom of the editor, for when you know the controls. |
 | Apply keeps the editor open | Off | Applying rebuilds the restaurant and leaves the editor open; Cancel closes it. |
 | Who can edit | Everyone | Host only: only the players on the host's computer can open the editor. Everyone can still watch. |
+| Customer order checks | Every frame | Host's setting. How often customers take food from tables and buffets: every frame (as in the base game), or every 2nd, 3rd or 4th frame. Less often is faster in very busy restaurants; customers react a moment later. |
 | Weather everywhere | On | Rain and snow over all of a big restaurant. Off: only near the middle, as in the base game. |
 | Profile next night and day | (button) | Writes which parts of the game cost the most frame time, over 30 seconds of night and 30 of day, to `Player.log`. Useful for performance reports. |
 

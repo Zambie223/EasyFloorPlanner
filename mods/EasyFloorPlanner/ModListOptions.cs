@@ -107,6 +107,20 @@ namespace EasyFloorPlanner
                     ["set"] = (Action<bool>)Settings.SetWeatherEverywhere,
                 },
 
+                Heading("Performance"),
+                new Dictionary<string, object>
+                {
+                    ["id"] = "orderCheckEvery",
+                    ["type"] = "choice",
+                    ["label"] = "Customer order checks",
+                    ["description"] = "Host's setting. Less often is faster when very busy; customers react a little later.",
+                    ["choices"] = new[] { "1", "2", "3", "4" },
+                    ["labels"] = new[] { "Every frame", "Every 2nd frame", "Every 3rd frame", "Every 4th frame" },
+                    ["enabled"] = (Func<bool>)(() => !IsClient),
+                    ["get"] = (Func<string>)(() => Settings.OrderCheckEvery.ToString()),
+                    ["set"] = (Action<string>)(v => Settings.SetOrderCheckEvery(int.Parse(v))),
+                },
+
                 Heading("Diagnostics"),
                 new Dictionary<string, object>
                 {

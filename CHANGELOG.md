@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.4 (2026-11-19)
+
+- **Faster busy days in big restaurants.** Two of the game's per-frame customer checks did far more work than needed with hundreds of customers:
+  - choosing the nearest buffet for each customer now takes one pass instead of comparing every customer with every pending item move;
+  - tables and buffets no longer offer food to customers who have nothing left to receive.
+  Both give exactly the same results as before. Only the host's game does this work, so it's the host's version that counts.
+- **New host setting, Customer order checks** (Performance): how often customers take food from tables and buffets, every frame (the default, as before) or every 2nd to 4th frame. Less often is faster in very busy restaurants; customers react a moment later.
+
 ## 0.4.3 (2026-11-19)
 
 - **Table seat counts shrink with the restaurant:** when the restaurant is shown smaller than the base game ever shows it (a very big restaurant, or zoomed out), the number over each table shrinks with it instead of covering the screen. Normal restaurants at the normal zoom look exactly as before.
